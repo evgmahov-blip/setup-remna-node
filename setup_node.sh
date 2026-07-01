@@ -1649,6 +1649,119 @@ change_decoy_template_menu() {
     done
 }
 
+
+# --- Установка и управление Telemt / MTProto ---
+run_telemt_installer() {
+    clear
+    echo -e "${GREEN}"
+    echo "  ========================================================"
+    echo "  ✈️  УСТАНОВКА И УПРАВЛЕНИЕ TELEMT / MTPROTO"
+    echo "  ========================================================"
+    echo -e "${NC}"
+
+    local script_dir
+    local local_vendor_dir
+    local installer_dir
+    local temp_dir=""
+    local base_url
+    local file
+
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    local_vendor_dir="${script_dir}/vendor/telemt-install"
+    base_url="https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install"
+
+    # При запуске из git-клона используем локальную vendored-копию.
+    if [[ -r "${local_vendor_dir}/install.sh" ]] &&
+       [[ -r "${local_vendor_dir}/mytelemtinfo.sh" ]] &&
+       [[ -r "${local_vendor_dir}/telemt-vless-refresh.sh" ]]
+    then
+        installer_dir="${local_vendor_dir}"
+        log "${INFO} Используется локальная копия Telemt Installer: ${installer_dir}"
+    else
+        # При запуске глобальной команды remnanode загружаем файлы
+        # только из собственного репозитория setup-remna-node.
+        temp_dir="$(mktemp -d)"
+        installer_dir="${temp_dir}"
+
+        log "${INFO} Загрузка Telemt Installer из собственного репозитория..."
+
+        for file in \
+            install.sh \
+            mytelemtinfo.sh \
+            telemt-vless-refresh.sh
+        do
+            if command -v curl >/dev/null 2>&1; then
+                if ! curl -fsSL \
+                    --proto '=https' \
+                    --tlsv1.2 \
+                    -H 'Cache-Control: no-cache' \
+                    "${base_url}/${file}" \
+                    -o "${installer_dir}/${file}"
+                then
+                    log "${ERROR} Не удалось загрузить ${file}"
+                    rm -rf "${temp_dir}"
+                    pause_prompt
+                    return 1
+                fi
+            elif command -v wget >/dev/null 2>&1; then
+                if ! wget -q \
+                    --no-cache \
+                    -O "${installer_dir}/${file}" \
+                    "${base_url}/${file}"
+                then
+                    log "${ERROR} Не удалось загрузить ${file}"
+                    rm -rf "${temp_dir}"
+                    pause_prompt
+                    return 1
+                fi
+            else
+                log "${ERROR} Для загрузки необходим curl или wget"
+                rm -rf "${temp_dir}"
+                pause_prompt
+                return 1
+            fi
+        done
+    fi
+
+    chmod 0755 \
+        "${installer_dir}/install.sh" \
+        "${installer_dir}/mytelemtinfo.sh" \
+        "${installer_dir}/telemt-vless-refresh.sh"
+
+    for file in \
+        install.sh \
+        mytelemtinfo.sh \
+        telemt-vless-refresh.sh
+    do
+        if ! bash -n "${installer_dir}/${file}"; then
+            log "${ERROR} Ошибка синтаксиса в ${file}. Запуск отменён."
+            [[ -n "${temp_dir}" ]] && rm -rf "${temp_dir}"
+            pause_prompt
+            return 1
+        fi
+    done
+
+    log "${SUCCESS} Файлы Telemt Installer проверены."
+    echo
+
+    (
+        cd "${installer_dir}"
+        bash ./install.sh
+    )
+    local installer_result=$?
+
+    [[ -n "${temp_dir}" ]] && rm -rf "${temp_dir}"
+
+    if (( installer_result == 0 )); then
+        log "${SUCCESS} Telemt Installer завершил работу."
+    else
+        log "${ERROR} Telemt Installer завершился с кодом ${installer_result}."
+    fi
+
+    pause_prompt
+    return "${installer_result}"
+}
+
 # --- Главное интерактивное меню ---
 main_menu() {
     while true; do
@@ -1684,9 +1797,10 @@ main_menu() {
         echo " 8) 🔌 Управление клиентскими портами Xray и UFW"
         echo " 9) 🎭 Смена маскировочного шаблона сайта (Selfsteal)"
         echo " 10) 🧪 Запустить мульти-тесты и диагностику сервера (YABS/DPI)"
+        echo " 11) ✈️  Установка и управление Telemt / MTProto"
         echo " 0) Выход"
         echo -e "${GRAY}--------------------------------------------------${NC}"
-        read -p "Выберите действие [0-10]: " menu_choice
+        read -p "Выберите действие [0-11]: " menu_choice
         menu_choice=${menu_choice:-0}
         
         case $menu_choice in
@@ -1700,6 +1814,7 @@ main_menu() {
             8) manage_xray_ports ;;
             9) change_decoy_template_menu ;;
             10) run_server_multitests ;;
+            11) run_telemt_installer ;;
             0) exit 0 ;;
             *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
         esac
