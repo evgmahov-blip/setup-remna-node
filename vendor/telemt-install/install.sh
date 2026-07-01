@@ -526,15 +526,92 @@ PYTEST
     read -rp "$(echo -e "${YELLOW}?${RESET} Установить web-панель? [y/N]: ")" ans
     if [[ "${ans,,}" =~ ^(y|yes|д|да)$ ]]; then
         DO_PANEL=true
+
         read -rp "$(echo -e "  ${YELLOW}?${RESET} Логин администратора [${PANEL_ADMIN_USER:-admin}]: ")" inp_user
         [[ -n "$inp_user" ]] && PANEL_ADMIN_USER="$inp_user"
+
+        # Выбор порта web-панели
+        local panel_port_candidate
+        local current_panel_port
+        local port_conflict
+        local n
+
+        while true; do
+            read -rp "$(echo -e "  ${YELLOW}?${RESET} TCP-порт web-панели [${PANEL_PORT:-8080}]: ")" panel_port_candidate
+            panel_port_candidate="${panel_port_candidate:-${PANEL_PORT:-8080}}"
+
+            if [[ ! "$panel_port_candidate" =~ ^[0-9]+$ ]]; then
+                warn "Порт должен состоять только из цифр"
+                continue
+            fi
+
+            if (( panel_port_candidate < 1 || panel_port_candidate > 65535 )); then
+                warn "Допустимый диапазон портов: 1–65535"
+                continue
+            fi
+
+            if [[ "$panel_port_candidate" == "${SSH_PORT:-22}" ]]; then
+                warn "Порт ${panel_port_candidate} уже используется SSH"
+                continue
+            fi
+
+            case "$panel_port_candidate" in
+                9091|9092|9093|9094)
+                    warn "Порт ${panel_port_candidate} зарезервирован для API Telemt"
+                    continue
+                    ;;
+            esac
+
+            port_conflict=false
+
+            for n in "${INSTANCES[@]}"; do
+                if [[ "${CUSTOM_PORTS[$n]:-}" == "$panel_port_candidate" ]]; then
+                    warn "Порт ${panel_port_candidate} уже выбран для инстанса telemt${n}"
+                    port_conflict=true
+                    break
+                fi
+            done
+
+            [[ "$port_conflict" == true ]] && continue
+
+            # Разрешаем уже работающую панель на её текущем порту.
+            current_panel_port=""
+
+            if [[ -r /etc/telemt-panel/config.toml ]]; then
+                current_panel_port=$(
+                    sed -nE \
+                        's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"[^"]*:([0-9]+)".*/\1/p' \
+                        /etc/telemt-panel/config.toml |
+                    head -n1
+                )
+            fi
+
+            if ss -lntH 2>/dev/null |
+                awk '{print $4}' |
+                grep -Eq "(^|:)${panel_port_candidate}$"
+            then
+                if [[ "$panel_port_candidate" == "$current_panel_port" ]] &&
+                   systemctl is-active --quiet telemt-panel 2>/dev/null
+                then
+                    info "Порт ${panel_port_candidate} уже используется установленной панелью"
+                else
+                    warn "TCP-порт ${panel_port_candidate} уже занят другим процессом"
+                    continue
+                fi
+            fi
+
+            PANEL_PORT="$panel_port_candidate"
+            break
+        done
+
         while true; do
             read -rsp "$(echo -e "  ${YELLOW}?${RESET} Пароль администратора: ")" PANEL_ADMIN_PASS
             echo
             if [[ -n "$PANEL_ADMIN_PASS" ]]; then break; fi
             warn "Пароль не может быть пустым"
         done
-        ok "Панель: логин=${BOLD}${PANEL_ADMIN_USER}${RESET}, порт=${BOLD}${PANEL_PORT:-8080}${RESET}"
+
+        ok "Панель: логин=${BOLD}${PANEL_ADMIN_USER}${RESET}, порт=${BOLD}${PANEL_PORT}${RESET}"
     fi
 }
 
@@ -792,8 +869,8 @@ step_ufw() {
 
     # Web-панель
     if [[ "${DO_PANEL:-false}" == true ]]; then
-        ufw allow "${PANEL_PORT:-8080}/tcp"
-        ok "Порт ${PANEL_PORT:-8080} открыт (web-панель)"
+        ufw allow "${PANEL_PORT}/tcp"
+        ok "Порт ${PANEL_PORT} открыт (web-панель)"
     fi
 
     if ufw --force enable; then
@@ -1596,7 +1673,21 @@ TOML
         chmod 600 "$PANEL_CFG"
         ok "Конфиг: ${PANEL_CFG}"
     else
-        info "Конфиг панели уже существует — пропуск"
+        # При повторном запуске применяем выбранный порт к существующему конфигу.
+        if grep -qE '^[[:space:]]*listen[[:space:]]*=' "$PANEL_CFG"; then
+            sed -i -E \
+                "s#^[[:space:]]*listen[[:space:]]*=.*#listen = \"0.0.0.0:${PANEL_PORT}\"#" \
+                "$PANEL_CFG"
+        else
+            sed -i \
+                "1ilisten = \"0.0.0.0:${PANEL_PORT}\"" \
+                "$PANEL_CFG"
+        fi
+
+        chown "${PANEL_USER}:${PANEL_USER}" "$PANEL_CFG"
+        chmod 600 "$PANEL_CFG"
+
+        ok "В существующем конфиге установлен порт ${PANEL_PORT}"
     fi
 
     # Sudoers drop-in
@@ -1649,7 +1740,7 @@ SVC
 
 panel_start() {
     [[ "${DO_PANEL:-false}" != true ]] && return 0
-    systemctl start "${PANEL_SVC}" 2>/dev/null || true
+    systemctl restart "${PANEL_SVC}" 2>/dev/null || true
     local st; st=$(systemctl is-active "${PANEL_SVC}" 2>/dev/null)
     if [[ "$st" == "active" ]]; then
         ok "telemt-panel: ${GREEN}active${RESET} (порт ${PANEL_PORT})"
