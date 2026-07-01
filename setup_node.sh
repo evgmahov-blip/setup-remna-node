@@ -391,6 +391,7 @@ issue_ssl_certificates_multi() {
     echo " 1) Cloudflare API (DNS-01, с поддержкой wildcard *.домен)"
     echo " 2) Certbot Standalone (HTTP-01, проверка по 80 порту - стандартно)"
     echo " 3) Gcore DNS API (DNS-01, с поддержкой wildcard *.домен)"
+    echo " 4) Использовать готовые локальные файлы сертификата и ключа"
     echo -e "${GRAY}--------------------------------------------------${NC}"
     read -p "Выберите метод выпуска [2]: " ssl_method
     ssl_method=${ssl_method:-2}
@@ -398,12 +399,15 @@ issue_ssl_certificates_multi() {
     local base_domain; base_domain=$(extract_base_domain "$domain")
     local wildcard_domain="*.$base_domain"
     
-    # Запрос почты
-    read -p "Введите ваш email для Let's Encrypt: " le_email
-    while [ -z "$le_email" ]; do
-        read -p "${RED}Email обязателен для получения SSL: ${NC}" le_email
-    done
-    
+    # Email требуется только для выпуска через Let's Encrypt.
+    local le_email=""
+    if [[ "$ssl_method" -ne 4 ]]; then
+        read -p "Введите ваш email для Let's Encrypt: " le_email
+        while [ -z "$le_email" ]; do
+            read -p "${RED}Email обязателен для получения SSL: ${NC}" le_email
+        done
+    fi
+
     # Папка для сертификатов ноды
     mkdir -p "$CERTS_DIR"
     
@@ -532,6 +536,57 @@ EOL
                 exit 1
             fi
             ;;
+        4)
+            local source_cert
+            local source_key
+            local cert_pubkey
+            local key_pubkey
+
+            read -rp "Путь к fullchain.pem: " source_cert
+            read -rp "Путь к privkey.pem: " source_key
+
+            if [[ ! -r "$source_cert" ]]; then
+                log "${ERROR} Файл сертификата не найден или недоступен: $source_cert"
+                return 1
+            fi
+
+            if [[ ! -r "$source_key" ]]; then
+                log "${ERROR} Файл приватного ключа не найден или недоступен: $source_key"
+                return 1
+            fi
+
+            if ! openssl x509 -in "$source_cert" -noout >/dev/null 2>&1; then
+                log "${ERROR} Некорректный PEM-сертификат: $source_cert"
+                return 1
+            fi
+
+            if ! openssl pkey -in "$source_key" -noout >/dev/null 2>&1; then
+                log "${ERROR} Некорректный приватный ключ: $source_key"
+                return 1
+            fi
+
+            cert_pubkey=$(
+                openssl x509 -in "$source_cert" -pubkey -noout 2>/dev/null |
+                openssl pkey -pubin -outform DER 2>/dev/null |
+                openssl sha256
+            )
+
+            key_pubkey=$(
+                openssl pkey -in "$source_key" -pubout -outform DER 2>/dev/null |
+                openssl sha256
+            )
+
+            if [[ -z "$cert_pubkey" || "$cert_pubkey" != "$key_pubkey" ]]; then
+                log "${ERROR} Сертификат и приватный ключ не соответствуют друг другу"
+                return 1
+            fi
+
+            install -m 0600 "$source_cert" "$CERTS_DIR/fullchain.pem"
+            install -m 0600 "$source_key" "$CERTS_DIR/privkey.pem"
+
+            log "${SUCCESS} Локальный SSL-сертификат установлен"
+            ;;
+
         *)
             log "${ERROR} Выбран неверный метод."
             exit 1
@@ -546,6 +601,10 @@ EOL
         active_domain="$base_domain"
     fi
     
+    if [[ "$ssl_method" -eq 4 ]]; then
+        return 0
+    fi
+
     local renew_hook_file="/etc/letsencrypt/renewal-hooks/deploy/copy-remnanode-certs.sh"
     mkdir -p "$(dirname "$renew_hook_file")"
     cat > "$renew_hook_file" <<EOF
@@ -555,6 +614,7 @@ if [ -d "/etc/letsencrypt/live/$active_domain" ]; then
     cp "/etc/letsencrypt/live/$active_domain/privkey.pem" "$CERTS_DIR/privkey.pem"
     chmod 600 "$CERTS_DIR/"*
     docker restart remnanode 2>/dev/null || true
+    docker restart remnawave-nginx 2>/dev/null || true
 fi
 EOF
     chmod +x "$renew_hook_file"
@@ -720,8 +780,7 @@ $( [ "$XRAY_VERSION_CHOICE" != "built-in" ] && [ -f "$XRAY_BIN_DIR/geosite.dat" 
       - /dev/shm:/dev/shm:rw
       - $WWW_DIR:/var/www/html:ro
       - $LOG_DIR/nginx:/var/log/nginx
-      - $CERTS_DIR/snakeoil.pem:/etc/nginx/ssl/snakeoil.pem:ro
-      - $CERTS_DIR/snakeoil.key:/etc/nginx/ssl/snakeoil.key:ro
+      - $CERTS_DIR:/etc/nginx/ssl:ro
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
 EOF
 
@@ -738,8 +797,8 @@ server {
 server {
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
     server_name $NODE_DOMAIN;
-    ssl_certificate "/etc/nginx/ssl/snakeoil.pem";
-    ssl_certificate_key "/etc/nginx/ssl/snakeoil.key";
+    ssl_certificate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certificate_key "/etc/nginx/ssl/privkey.pem";
 
     root /var/www/html;
     index index.html;
@@ -1121,6 +1180,7 @@ run_initial_setup() {
         read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain
         DECOY_DOMAIN=${decoy_domain:-github.com}
         generate_masked_template "$DECOY_DOMAIN"
+        issue_ssl_certificates_multi "$NODE_DOMAIN"
     else
         # Для TLS генерируем маскировку под собственный домен ноды (для fallback)
         generate_masked_template "$NODE_DOMAIN"
@@ -1177,9 +1237,7 @@ change_domain_and_ssl() {
     # Перегенерируем маскировочный сайт в любом случае
     generate_masked_template "$NODE_DOMAIN"
 
-    if [ "$protocol" = "tls" ] || [ "$protocol" = "xhttp" ]; then
-        issue_ssl_certificates_multi "$NODE_DOMAIN"
-    fi
+    issue_ssl_certificates_multi "$NODE_DOMAIN"
     
     # Перевыпускаем конфигурацию
     deploy_compose "$protocol" "$node_port" "$secret_key_value"
