@@ -4,7 +4,8 @@
 #  Источник гайда:   https://assyoucandy.github.io/telemt-server-guide/
 #  Keepalive:        https://assyoucandy.github.io/telemt-server-guide/telemt-keepalive-guide.html
 #  nft SYN limiter:  https://h1de0x.github.io/telemt-tune/
-#  Repo:             https://github.com/vaalaav/telemt-install
+#  Upstream:         https://github.com/vaalaav/telemt-install
+#  Vendored in:      https://github.com/evgmahov-blip/setup-remna-node/tree/custom/vendor/telemt-install
 # =============================================================================
 
 set -uo pipefail
@@ -135,7 +136,7 @@ print_banner() {
 BANNER
     echo -e "${RESET}"
     echo -e "  Telegram MTProxy (Rust) — автоустановка на Ubuntu"
-    echo -e "  ${CYAN}https://github.com/vaalaav/telemt-install${RESET}"
+    echo -e "  ${CYAN}https://github.com/evgmahov-blip/setup-remna-node/tree/custom/vendor/telemt-install${RESET}"
     echo ""
 }
 
@@ -1436,13 +1437,68 @@ TUNIT
 # ─── ШАГ: Установка mytelemtinfo ─────────────────────────────────────────────
 step_install_mytelemtinfo() {
     hdr "Установка команды mytelemtinfo"
-    info "Скачивание менеджера /usr/local/bin/mytelemtinfo"
+    info "Установка менеджера из комплекта setup-remna-node"
     confirm "Установить?" skip || return 0
 
-    curl -fsSL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/vaalaav/telemt-install/main/mytelemtinfo.sh" \
-        -o /usr/local/bin/mytelemtinfo
-    chmod +x /usr/local/bin/mytelemtinfo
-    ok "Установлено: mytelemtinfo"
+    local script_dir
+    local base_url
+    local tmp_dir
+    local info_source
+    local refresh_source
+
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    base_url="https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install"
+    tmp_dir="$(mktemp -d)"
+
+    info_source="${script_dir}/mytelemtinfo.sh"
+    refresh_source="${script_dir}/telemt-vless-refresh.sh"
+
+    if [[ ! -r "${info_source}" ]]; then
+        info_source="${tmp_dir}/mytelemtinfo.sh"
+
+        if ! curl -fsSL \
+            -H "Cache-Control: no-cache" \
+            "${base_url}/mytelemtinfo.sh" \
+            -o "${info_source}"
+        then
+            rm -rf "${tmp_dir}"
+            err "Не удалось получить mytelemtinfo.sh из собственного репозитория"
+            return 1
+        fi
+    fi
+
+    if [[ ! -r "${refresh_source}" ]]; then
+        refresh_source="${tmp_dir}/telemt-vless-refresh.sh"
+
+        if ! curl -fsSL \
+            -H "Cache-Control: no-cache" \
+            "${base_url}/telemt-vless-refresh.sh" \
+            -o "${refresh_source}"
+        then
+            rm -rf "${tmp_dir}"
+            err "Не удалось получить telemt-vless-refresh.sh из собственного репозитория"
+            return 1
+        fi
+    fi
+
+    mkdir -p /usr/local/share/telemt-install
+
+    install -m 0755 \
+        "${info_source}" \
+        /usr/local/bin/mytelemtinfo
+
+    install -m 0755 \
+        "${refresh_source}" \
+        /usr/local/sbin/telemt-vless-refresh
+
+    install -m 0755 \
+        "${refresh_source}" \
+        /usr/local/share/telemt-install/telemt-vless-refresh.sh
+
+    rm -rf "${tmp_dir}"
+
+    ok "Установлено: /usr/local/bin/mytelemtinfo"
+    ok "Установлено: /usr/local/sbin/telemt-vless-refresh"
     info "Запуск: ${BOLD}mytelemtinfo${RESET} или ${BOLD}sudo mytelemtinfo${RESET}"
 }
 
@@ -1769,7 +1825,7 @@ print_summary() {
 
     echo ""
     echo -e "  ${BOLD}Управление:${RESET} ${CYAN}sudo mytelemtinfo${RESET}"
-    echo -e "  ${BOLD}Обновление:${RESET} ${DIM}bash <(curl -fsSL https://raw.githubusercontent.com/vaalaav/telemt-install/main/install.sh) --update${RESET}"
+    echo -e "  ${BOLD}Обновление:${RESET} ${DIM}bash <(curl -fsSL https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install/install.sh) --update${RESET}"
     echo ""
     echo ""
 }
@@ -2186,7 +2242,7 @@ do_purge_only() {
     echo ""
     if do_purge_all; then
         echo -e "  Чтобы установить заново позже:"
-        echo -e "  ${CYAN}sudo bash <(curl -fsSL https://raw.githubusercontent.com/vaalaav/telemt-install/main/install.sh)${RESET}"
+        echo -e "  ${CYAN}sudo bash <(curl -fsSL https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install/install.sh)${RESET}"
         echo ""
     fi
     exit 0

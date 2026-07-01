@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  mytelemtinfo — интерактивный менеджер telemt
-#  Repo: https://github.com/vaalaav/telemt-install
+#  Upstream: https://github.com/vaalaav/telemt-install
+#  Vendored in: https://github.com/evgmahov-blip/setup-remna-node/tree/custom/vendor/telemt-install
 # =============================================================================
 
 # Защита от запуска через process substitution или pipe
@@ -1954,7 +1955,7 @@ nft_install() {
     draw_header
     echo -e "  ${BOLD}Установка nft SYN Limiter${RESET}\n"
     info "Запустите установщик для настройки nft limiter:"
-    echo -e "  ${CYAN}bash <(curl -fsSL https://raw.githubusercontent.com/vaalaav/telemt-install/main/install.sh)${RESET}"
+    echo -e "  ${CYAN}bash <(curl -fsSL https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install/install.sh)${RESET}"
     echo -e "\n  Или установите nftables и создайте скрипт вручную по гайду:"
     echo -e "  ${CYAN}https://h1de0x.github.io/telemt-tune/${RESET}"
     pause
@@ -2997,15 +2998,49 @@ SVC
 
 # Установка скрипта-генератора (для случая когда mytelemtinfo запускают без install.sh)
 install_xray_refresh_helper() {
-    if [[ -f /usr/local/sbin/telemt-vless-refresh ]]; then
-        return 0  # уже установлен
+    if [[ -x /usr/local/sbin/telemt-vless-refresh ]]; then
+        return 0
     fi
-    # Скачиваем из репо
-    if curl -fsSL "https://raw.githubusercontent.com/vaalaav/telemt-install/main/telemt-vless-refresh.sh?v=$(date +%s)" -o /usr/local/sbin/telemt-vless-refresh 2>/dev/null; then
-        chmod +x /usr/local/sbin/telemt-vless-refresh
-    else
-        warn "Не удалось скачать telemt-vless-refresh — нужно переустановить через install.sh"
+
+    local local_source
+    local own_url
+    local tmp_file
+
+    local_source="/usr/local/share/telemt-install/telemt-vless-refresh.sh"
+    own_url="https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/vendor/telemt-install/telemt-vless-refresh.sh"
+    tmp_file="$(mktemp)"
+
+    if [[ -r "${local_source}" ]]; then
+        install -m 0755 \
+            "${local_source}" \
+            /usr/local/sbin/telemt-vless-refresh
+
+        rm -f "${tmp_file}"
+        return 0
     fi
+
+    if curl -fsSL \
+        -H "Cache-Control: no-cache" \
+        "${own_url}" \
+        -o "${tmp_file}" 2>/dev/null
+    then
+        mkdir -p /usr/local/share/telemt-install
+
+        install -m 0755 \
+            "${tmp_file}" \
+            /usr/local/sbin/telemt-vless-refresh
+
+        install -m 0755 \
+            "${tmp_file}" \
+            /usr/local/share/telemt-install/telemt-vless-refresh.sh
+
+        rm -f "${tmp_file}"
+        return 0
+    fi
+
+    rm -f "${tmp_file}"
+    warn "Не найден telemt-vless-refresh.sh и не удалось загрузить его из собственного репозитория"
+    return 1
 }
 
 install_xray_refresh_timer_helper() {
