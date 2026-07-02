@@ -749,6 +749,8 @@ EOF
     fi
 
     # Формирование docker-compose.yml (Контейнер Nginx ВСЕГДА разворачивается для маскировки)
+    mkdir -p "$APP_DIR/nginx-extra"
+
     cat > docker-compose.yml <<EOF
 services:
   remnanode:
@@ -777,6 +779,7 @@ $( [ "$XRAY_VERSION_CHOICE" != "built-in" ] && [ -f "$XRAY_BIN_DIR/geosite.dat" 
     network_mode: host
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - $APP_DIR/nginx-extra:/etc/nginx/telemt-panel:ro
       - /dev/shm:/dev/shm:rw
       - $WWW_DIR:/var/www/html:ro
       - $LOG_DIR/nginx:/var/log/nginx
@@ -808,6 +811,8 @@ server {
         try_files \$uri \$uri/ =404;
     }
 }
+
+include /etc/nginx/telemt-panel/*.conf;
 EOF
 
         # Установка snakeoil сертификатов если их нет (нужно для валидности конфига Nginx)
@@ -835,6 +840,8 @@ server {
         try_files \$uri \$uri/ =404;
     }
 }
+
+include /etc/nginx/telemt-panel/*.conf;
 EOF
     fi
 
