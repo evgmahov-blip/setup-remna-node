@@ -2898,6 +2898,134 @@ PYU
 }
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+configure_existing_panel_https() {
+    hdr "Настройка HTTPS web-панели"
+
+    local panel_cfg="${PANEL_CFG:-/etc/telemt-panel/config.toml}"
+    local state_file="${PANEL_HTTPS_STATE:-/etc/telemt-panel/https.env}"
+    local current_panel_port=""
+    local current_https_port=""
+    local https_port_candidate=""
+    local old_https_port=""
+
+    if [[ ! -r "$panel_cfg" ]]; then
+        err "Панель не установлена: не найден ${panel_cfg}"
+        return 1
+    fi
+
+    current_panel_port=$(
+        sed -nE \
+            's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"[^"]*:([0-9]+)".*/\1/p' \
+            "$panel_cfg" |
+        head -n1
+    )
+
+    if [[ ! "$current_panel_port" =~ ^[0-9]+$ ]]; then
+        err "Не удалось определить внутренний порт панели из ${panel_cfg}"
+        return 1
+    fi
+
+    PANEL_PORT="$current_panel_port"
+
+    if [[ -r "$state_file" ]]; then
+        current_https_port=$(
+            sed -nE \
+                's/^[[:space:]]*PANEL_HTTPS_PORT=([0-9]+)[[:space:]]*$/\1/p' \
+                "$state_file" |
+            head -n1
+        )
+    fi
+
+    PANEL_HTTPS_PORT="${current_https_port:-${PANEL_HTTPS_PORT:-8444}}"
+    old_https_port="$current_https_port"
+
+    detect_ssh_port
+
+    while true; do
+        read -rp "$(echo -e "  ${YELLOW}?${RESET} Внешний HTTPS-порт панели [${PANEL_HTTPS_PORT}]: ")" \
+            https_port_candidate
+
+        https_port_candidate="${https_port_candidate:-${PANEL_HTTPS_PORT}}"
+
+        if [[ ! "$https_port_candidate" =~ ^[0-9]+$ ]]; then
+            warn "Порт должен состоять только из цифр"
+            continue
+        fi
+
+        if (( https_port_candidate < 1 || https_port_candidate > 65535 )); then
+            warn "Допустимый диапазон портов: 1–65535"
+            continue
+        fi
+
+        if [[ "$https_port_candidate" == "$PANEL_PORT" ]]; then
+            warn "Внешний HTTPS-порт совпадает с внутренним портом панели"
+            continue
+        fi
+
+        if [[ "$https_port_candidate" == "${SSH_PORT:-22}" ]]; then
+            warn "Порт ${https_port_candidate} используется SSH"
+            continue
+        fi
+
+        case "$https_port_candidate" in
+            80|443|9091|9092|9093|9094)
+                warn "Порт ${https_port_candidate} зарезервирован Remnanode или Telemt API"
+                continue
+                ;;
+        esac
+
+        if ss -lntH 2>/dev/null |
+            awk '{print $4}' |
+            grep -Eq "(^|:)${https_port_candidate}$"
+        then
+            if [[ "$https_port_candidate" == "$current_https_port" ]] &&
+               docker ps --format '{{.Names}}' 2>/dev/null |
+               grep -qx 'remnawave-nginx'
+            then
+                info "Используется текущий HTTPS-порт ${https_port_candidate}"
+            else
+                warn "TCP-порт ${https_port_candidate} уже занят"
+                continue
+            fi
+        fi
+
+        PANEL_HTTPS_PORT="$https_port_candidate"
+        break
+    done
+
+    DO_PANEL=true
+
+    if ! panel_https_proxy_install; then
+        err "Не удалось настроить HTTPS web-панели"
+        return 1
+    fi
+
+    if command -v ufw &>/dev/null; then
+        ufw allow "${PANEL_HTTPS_PORT}/tcp"
+        ok "Порт ${PANEL_HTTPS_PORT}/tcp открыт в UFW"
+
+        if [[ "$old_https_port" =~ ^[0-9]+$ ]] &&
+           [[ "$old_https_port" != "$PANEL_HTTPS_PORT" ]]
+        then
+            ufw --force delete allow "${old_https_port}/tcp" \
+                >/dev/null 2>&1 || true
+
+            ok "Старое правило ${old_https_port}/tcp удалено"
+        fi
+
+        ufw reload >/dev/null 2>&1 || true
+    fi
+
+    if systemctl is-active --quiet "${PANEL_SVC:-telemt-panel}"; then
+        ok "telemt-panel работает на 127.0.0.1:${PANEL_PORT}"
+    else
+        warn "telemt-panel сейчас не активна"
+    fi
+
+    ok "HTTPS-панель: https://${PANEL_DOMAIN}:${PANEL_HTTPS_PORT}"
+}
+
 main() {
     # Перенаправляем stdin на /dev/tty — это нужно когда скрипт запускается через
     # `curl ... | bash` или `bash <(curl ...)`. Без этого read получает данные из
@@ -3092,16 +3220,18 @@ main() {
     echo -e "  ${GREEN}2${RESET}  ${BOLD}Установка поверх${RESET}"
     echo -e "  ${GREEN}3${RESET}  ${BOLD}Очистка и установка${RESET}"
     echo ""
-    echo -e "  ${YELLOW}4${RESET}  ${BOLD}${YELLOW}Удалить установленные модули${RESET}"
-    echo -e "  ${RED}5${RESET}  ${BOLD}${RED}Полная очистка${RESET}"
-    echo -e "  ${DIM}6${RESET}  ${BOLD}Выход${RESET}"
+    echo -e "  ${GREEN}4${RESET}  ${BOLD}Настроить HTTPS web-панели${RESET}"
+    echo ""
+    echo -e "  ${YELLOW}5${RESET}  ${BOLD}${YELLOW}Удалить установленные модули${RESET}"
+    echo -e "  ${RED}6${RESET}  ${BOLD}${RED}Полная очистка${RESET}"
+    echo -e "  ${DIM}7${RESET}  ${BOLD}Выход${RESET}"
     echo ""
     local mode
     if [[ "${1:-}" == "--clean" ]]; then
         mode=3
         info "Режим --clean: очистка и установка"
     else
-        read -rp "  Выбор [1-6]: " mode
+        read -rp "  Выбор [1-7]: " mode
     fi
     case "$mode" in
         1) info "Режим: чистая установка"; break ;;
@@ -3117,9 +3247,16 @@ main() {
             sleep 2
             break
             ;;
-        4) do_selective_remove; echo ""; info "Нажмите Enter для возврата в меню..."; read -r; continue ;;
-        5) do_purge_only ;;
-        6|0|q|"") echo -e "${YELLOW}Выход.${RESET}"; exit 0 ;;
+        4)
+            configure_existing_panel_https
+            echo ""
+            info "Нажмите Enter для возврата в меню..."
+            read -r
+            continue
+            ;;
+        5) do_selective_remove; echo ""; info "Нажмите Enter для возврата в меню..."; read -r; continue ;;
+        6) do_purge_only ;;
+        7|0|q|"") echo -e "${YELLOW}Выход.${RESET}"; exit 0 ;;
         *) err "Неверный пункт"; sleep 1; continue ;;
     esac
     done  # конец while true
