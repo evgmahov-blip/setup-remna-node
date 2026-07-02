@@ -520,25 +520,32 @@ PYTEST
     echo ""
     echo -e "  ${BOLD}Web-панель управления (telemt_panel)${RESET}"
     echo -e "  Мониторинг, управление пользователями, обновления — через браузер."
-    echo -e "  ${DIM}Панель слушает порт ${PANEL_PORT:-8080}, подключается к API первого инстанса.${RESET}"
+    echo -e "  ${DIM}Панель слушает локально, внешний доступ публикуется через HTTPS.${RESET}"
+
     DO_PANEL=false
     PANEL_ADMIN_PASS=""
+    PANEL_PORT="${PANEL_PORT:-8080}"
+    PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8444}"
+
     read -rp "$(echo -e "${YELLOW}?${RESET} Установить web-панель? [y/N]: ")" ans
+
     if [[ "${ans,,}" =~ ^(y|yes|д|да)$ ]]; then
         DO_PANEL=true
 
         read -rp "$(echo -e "  ${YELLOW}?${RESET} Логин администратора [${PANEL_ADMIN_USER:-admin}]: ")" inp_user
         [[ -n "$inp_user" ]] && PANEL_ADMIN_USER="$inp_user"
 
-        # Выбор порта web-панели
         local panel_port_candidate
+        local https_port_candidate
         local current_panel_port
+        local current_https_port
         local port_conflict
         local n
 
+        # Внутренний локальный порт панели
         while true; do
-            read -rp "$(echo -e "  ${YELLOW}?${RESET} TCP-порт web-панели [${PANEL_PORT:-8080}]: ")" panel_port_candidate
-            panel_port_candidate="${panel_port_candidate:-${PANEL_PORT:-8080}}"
+            read -rp "$(echo -e "  ${YELLOW}?${RESET} Внутренний порт панели [${PANEL_PORT}]: ")" panel_port_candidate
+            panel_port_candidate="${panel_port_candidate:-${PANEL_PORT}}"
 
             if [[ ! "$panel_port_candidate" =~ ^[0-9]+$ ]]; then
                 warn "Порт должен состоять только из цифр"
@@ -551,7 +558,7 @@ PYTEST
             fi
 
             if [[ "$panel_port_candidate" == "${SSH_PORT:-22}" ]]; then
-                warn "Порт ${panel_port_candidate} уже используется SSH"
+                warn "Порт ${panel_port_candidate} используется SSH"
                 continue
             fi
 
@@ -566,7 +573,7 @@ PYTEST
 
             for n in "${INSTANCES[@]}"; do
                 if [[ "${CUSTOM_PORTS[$n]:-}" == "$panel_port_candidate" ]]; then
-                    warn "Порт ${panel_port_candidate} уже выбран для инстанса telemt${n}"
+                    warn "Порт ${panel_port_candidate} используется инстансом telemt${n}"
                     port_conflict=true
                     break
                 fi
@@ -574,7 +581,6 @@ PYTEST
 
             [[ "$port_conflict" == true ]] && continue
 
-            # Разрешаем уже работающую панель на её текущем порту.
             current_panel_port=""
 
             if [[ -r /etc/telemt-panel/config.toml ]]; then
@@ -595,7 +601,7 @@ PYTEST
                 then
                     info "Порт ${panel_port_candidate} уже используется установленной панелью"
                 else
-                    warn "TCP-порт ${panel_port_candidate} уже занят другим процессом"
+                    warn "TCP-порт ${panel_port_candidate} уже занят"
                     continue
                 fi
             fi
@@ -604,14 +610,93 @@ PYTEST
             break
         done
 
+        # Текущий внешний HTTPS-порт ранее установленной панели.
+        current_https_port=""
+
+        if [[ -r "${PANEL_HTTPS_STATE:-/etc/telemt-panel/https.env}" ]]; then
+            current_https_port=$(
+                sed -nE                     's/^[[:space:]]*PANEL_HTTPS_PORT=([0-9]+)[[:space:]]*$/\1/p'                     "${PANEL_HTTPS_STATE:-/etc/telemt-panel/https.env}" |
+                head -n1
+            )
+        fi
+
+        # Внешний HTTPS-порт reverse proxy
+        while true; do
+            read -rp "$(echo -e "  ${YELLOW}?${RESET} Внешний HTTPS-порт панели [${PANEL_HTTPS_PORT}]: ")" https_port_candidate
+            https_port_candidate="${https_port_candidate:-${PANEL_HTTPS_PORT}}"
+
+            if [[ ! "$https_port_candidate" =~ ^[0-9]+$ ]]; then
+                warn "Порт должен состоять только из цифр"
+                continue
+            fi
+
+            if (( https_port_candidate < 1 || https_port_candidate > 65535 )); then
+                warn "Допустимый диапазон портов: 1–65535"
+                continue
+            fi
+
+            if [[ "$https_port_candidate" == "$PANEL_PORT" ]]; then
+                warn "Внешний HTTPS-порт не должен совпадать с внутренним портом панели"
+                continue
+            fi
+
+            if [[ "$https_port_candidate" == "${SSH_PORT:-22}" ]]; then
+                warn "Порт ${https_port_candidate} используется SSH"
+                continue
+            fi
+
+            case "$https_port_candidate" in
+                80|443|9091|9092|9093|9094)
+                    warn "Порт ${https_port_candidate} зарезервирован или уже используется Remnanode"
+                    continue
+                    ;;
+            esac
+
+            port_conflict=false
+
+            for n in "${INSTANCES[@]}"; do
+                if [[ "${CUSTOM_PORTS[$n]:-}" == "$https_port_candidate" ]]; then
+                    warn "Порт ${https_port_candidate} используется инстансом telemt${n}"
+                    port_conflict=true
+                    break
+                fi
+            done
+
+            [[ "$port_conflict" == true ]] && continue
+
+            if ss -lntH 2>/dev/null |
+                awk '{print $4}' |
+                grep -Eq "(^|:)${https_port_candidate}$"
+            then
+                if [[ "$https_port_candidate" == "$current_https_port" ]] &&
+                   docker ps --format '{{.Names}}' 2>/dev/null |
+                   grep -qx 'remnawave-nginx'
+                then
+                    info "Порт ${https_port_candidate} уже используется HTTPS-прокси Telemt-панели"
+                else
+                    warn "TCP-порт ${https_port_candidate} уже занят"
+                    continue
+                fi
+            fi
+
+            PANEL_HTTPS_PORT="$https_port_candidate"
+            break
+        done
+
         while true; do
             read -rsp "$(echo -e "  ${YELLOW}?${RESET} Пароль администратора: ")" PANEL_ADMIN_PASS
             echo
-            if [[ -n "$PANEL_ADMIN_PASS" ]]; then break; fi
+
+            if [[ -n "$PANEL_ADMIN_PASS" ]]; then
+                break
+            fi
+
             warn "Пароль не может быть пустым"
         done
 
-        ok "Панель: логин=${BOLD}${PANEL_ADMIN_USER}${RESET}, порт=${BOLD}${PANEL_PORT}${RESET}"
+        ok "Панель: логин=${BOLD}${PANEL_ADMIN_USER}${RESET}"
+        ok "Внутренний адрес: ${BOLD}127.0.0.1:${PANEL_PORT}${RESET}"
+        ok "Внешний HTTPS-порт: ${BOLD}${PANEL_HTTPS_PORT}${RESET}"
     fi
 }
 
@@ -863,14 +948,15 @@ step_ufw() {
     for n in "${INSTANCES[@]}"; do
         local port; port=$(instance_port "$n")
         ufw allow "${port}/tcp"
-        ok "Порт $port открыт"
+        ok "Порт ${port}/tcp открыт (telemt${n} / MTProto)"
     done
 
 
-    # Web-панель
+    # Web-панель: внутренний PANEL_PORT наружу не открываем.
+    # Открывается только внешний HTTPS-порт reverse proxy.
     if [[ "${DO_PANEL:-false}" == true ]]; then
-        ufw allow "${PANEL_PORT}/tcp"
-        ok "Порт ${PANEL_PORT} открыт (web-панель)"
+        ufw allow "${PANEL_HTTPS_PORT}/tcp"
+        ok "Порт ${PANEL_HTTPS_PORT}/tcp открыт (HTTPS web-панель)"
     fi
 
     if ufw --force enable; then
@@ -1589,7 +1675,174 @@ PANEL_DATA="/var/lib/telemt-panel"
 PANEL_SVC="telemt-panel"
 PANEL_USER="telemt-panel"
 PANEL_PORT="${PANEL_PORT:-8080}"
+PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8444}"
 PANEL_ADMIN_USER="${PANEL_ADMIN_USER:-admin}"
+
+REMNA_APP_DIR="${REMNA_APP_DIR:-/opt/remnanode}"
+REMNA_DOMAIN_FILE="${REMNA_DOMAIN_FILE:-${REMNA_APP_DIR}/.node_domain}"
+REMNA_CERT_DIR="${REMNA_CERT_DIR:-${REMNA_APP_DIR}/certs}"
+REMNA_NGINX_EXTRA_DIR="${REMNA_NGINX_EXTRA_DIR:-${REMNA_APP_DIR}/nginx-extra}"
+PANEL_HTTPS_CFG="${PANEL_HTTPS_CFG:-${REMNA_NGINX_EXTRA_DIR}/telemt-panel.conf}"
+PANEL_HTTPS_STATE="${PANEL_HTTPS_STATE:-${PANEL_CFG_DIR}/https.env}"
+PANEL_DOMAIN=""
+
+panel_https_proxy_install() {
+    [[ "${DO_PANEL:-false}" != true ]] && return 0
+
+    local compose_file="${REMNA_APP_DIR}/docker-compose.yml"
+    local panel_domain
+
+    if [[ ! -s "$REMNA_DOMAIN_FILE" ]]; then
+        err "Не найден домен ноды: ${REMNA_DOMAIN_FILE}"
+        return 1
+    fi
+
+    panel_domain=$(tr -d '[:space:]' < "$REMNA_DOMAIN_FILE")
+
+    if [[ -z "$panel_domain" || "$panel_domain" == "localhost" ]]; then
+        err "Некорректный домен ноды: ${panel_domain:-пусто}"
+        return 1
+    fi
+
+    if [[ ! -s "${REMNA_CERT_DIR}/fullchain.pem" ]]; then
+        err "Не найден SSL-сертификат: ${REMNA_CERT_DIR}/fullchain.pem"
+        return 1
+    fi
+
+    if [[ ! -s "${REMNA_CERT_DIR}/privkey.pem" ]]; then
+        err "Не найден SSL-ключ: ${REMNA_CERT_DIR}/privkey.pem"
+        return 1
+    fi
+
+    if [[ ! -f "$compose_file" ]]; then
+        err "Не найден docker-compose Remnanode: ${compose_file}"
+        return 1
+    fi
+
+    mkdir -p "$REMNA_NGINX_EXTRA_DIR"
+
+    # Для ранее установленных нод добавляем mount автоматически.
+    if ! grep -q '/etc/nginx/telemt-panel' "$compose_file"; then
+        python3 - "$compose_file" "$REMNA_NGINX_EXTRA_DIR" <<'PYCOMPOSE'
+from pathlib import Path
+import sys
+
+compose = Path(sys.argv[1])
+extra_dir = sys.argv[2]
+text = compose.read_text()
+
+needle = "      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro\n"
+insert = (
+    needle
+    + f"      - {extra_dir}:/etc/nginx/telemt-panel:ro\n"
+)
+
+if needle not in text:
+    raise SystemExit(
+        "Не найден mount nginx.conf в docker-compose.yml"
+    )
+
+text = text.replace(needle, insert, 1)
+compose.write_text(text)
+PYCOMPOSE
+
+        ok "В docker-compose добавлен каталог конфигурации Telemt-панели"
+    fi
+
+    local nginx_conf="${REMNA_APP_DIR}/nginx.conf"
+
+    if [[ ! -f "$nginx_conf" ]]; then
+        err "Не найден основной конфиг Nginx: ${nginx_conf}"
+        return 1
+    fi
+
+    if ! grep -qF         'include /etc/nginx/telemt-panel/*.conf;'         "$nginx_conf"
+    then
+        printf '\ninclude /etc/nginx/telemt-panel/*.conf;\n'             >> "$nginx_conf"
+
+        ok "В основной nginx.conf добавлено подключение Telemt-панели"
+    fi
+
+    cat > "$PANEL_HTTPS_CFG" <<EOF
+server {
+    listen ${PANEL_HTTPS_PORT} ssl;
+    server_name ${panel_domain};
+
+    ssl_certificate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certificate_key "/etc/nginx/ssl/privkey.pem";
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 32m;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PANEL_PORT};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port ${PANEL_HTTPS_PORT};
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+EOF
+
+    chmod 0644 "$PANEL_HTTPS_CFG"
+
+    cat > "$PANEL_HTTPS_STATE" <<EOF
+PANEL_DOMAIN=${panel_domain}
+PANEL_PORT=${PANEL_PORT}
+PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT}
+EOF
+
+    chown "${PANEL_USER}:${PANEL_USER}" "$PANEL_HTTPS_STATE"
+    chmod 0600 "$PANEL_HTTPS_STATE"
+
+    info "Перезапуск remnawave-nginx с HTTPS-конфигурацией панели..."
+
+    if ! (
+        cd "$REMNA_APP_DIR"
+        docker compose up -d --force-recreate remnawave-nginx
+    ); then
+        rm -f "$PANEL_HTTPS_CFG"
+
+        (
+            cd "$REMNA_APP_DIR"
+            docker compose up -d --force-recreate remnawave-nginx
+        ) >/dev/null 2>&1 || true
+
+        err "Не удалось запустить remnawave-nginx"
+        return 1
+    fi
+
+    sleep 2
+
+    if ! docker exec remnawave-nginx nginx -t; then
+        rm -f "$PANEL_HTTPS_CFG"
+
+        (
+            cd "$REMNA_APP_DIR"
+            docker compose up -d --force-recreate remnawave-nginx
+        ) >/dev/null 2>&1 || true
+
+        err "Ошибка проверки конфигурации Nginx, изменения отменены"
+        return 1
+    fi
+
+    docker exec remnawave-nginx nginx -s reload >/dev/null 2>&1 || \
+        docker restart remnawave-nginx >/dev/null
+
+    PANEL_DOMAIN="$panel_domain"
+
+    ok "HTTPS reverse proxy настроен"
+    ok "Адрес панели: https://${panel_domain}:${PANEL_HTTPS_PORT}"
+}
 
 step_panel() {
     [[ "${DO_PANEL:-false}" != true ]] && return 0
@@ -1651,7 +1904,7 @@ step_panel() {
             || { err "Не удалось сгенерировать хеш пароля"; return 1; }
 
         cat > "$PANEL_CFG" <<TOML
-listen = "0.0.0.0:${PANEL_PORT}"
+listen = "127.0.0.1:${PANEL_PORT}"
 data_dir = "${PANEL_DATA}"
 
 [telemt]
@@ -1676,11 +1929,11 @@ TOML
         # При повторном запуске применяем выбранный порт к существующему конфигу.
         if grep -qE '^[[:space:]]*listen[[:space:]]*=' "$PANEL_CFG"; then
             sed -i -E \
-                "s#^[[:space:]]*listen[[:space:]]*=.*#listen = \"0.0.0.0:${PANEL_PORT}\"#" \
+                "s#^[[:space:]]*listen[[:space:]]*=.*#listen = \"127.0.0.1:${PANEL_PORT}\"#" \
                 "$PANEL_CFG"
         else
             sed -i \
-                "1ilisten = \"0.0.0.0:${PANEL_PORT}\"" \
+                "1ilisten = \"127.0.0.1:${PANEL_PORT}\"" \
                 "$PANEL_CFG"
         fi
 
@@ -1734,8 +1987,8 @@ SVC
     systemctl enable "${PANEL_SVC}"
     ok "Systemd-сервис ${PANEL_SVC} создан"
 
-    local pub_ip; pub_ip=$(get_public_ip_cached)
-    info "Панель будет доступна: http://${pub_ip}:${PANEL_PORT}"
+    panel_https_proxy_install || return 1
+    info "Панель будет доступна: https://${PANEL_DOMAIN}:${PANEL_HTTPS_PORT}"
 }
 
 panel_start() {
@@ -1750,16 +2003,71 @@ panel_start() {
 }
 
 panel_remove() {
-    if [[ -f "/etc/systemd/system/${PANEL_SVC:-telemt-panel}.service" ]] || id "${PANEL_USER:-telemt-panel}" &>/dev/null; then
+    local state_file="${PANEL_HTTPS_STATE:-/etc/telemt-panel/https.env}"
+    local https_cfg="${PANEL_HTTPS_CFG:-/opt/remnanode/nginx-extra/telemt-panel.conf}"
+    local https_port=""
+
+    # Считываем внешний HTTPS-порт до удаления каталога панели.
+    if [[ -r "$state_file" ]]; then
+        https_port=$(
+            sed -nE \
+                's/^[[:space:]]*PANEL_HTTPS_PORT=([0-9]+)[[:space:]]*$/\1/p' \
+                "$state_file" |
+            head -n1
+        )
+    fi
+
+    # Удаляем HTTPS reverse proxy.
+    if [[ -f "$https_cfg" ]]; then
+        rm -f "$https_cfg"
+        ok "HTTPS-конфиг Telemt-панели удалён"
+    fi
+
+    # Применяем удаление конфига в работающем Nginx.
+    if command -v docker &>/dev/null &&
+       docker ps --format '{{.Names}}' 2>/dev/null |
+       grep -qx 'remnawave-nginx'
+    then
+        if docker exec remnawave-nginx nginx -t >/dev/null 2>&1; then
+            docker exec remnawave-nginx nginx -s reload >/dev/null 2>&1 || \
+                docker restart remnawave-nginx >/dev/null 2>&1 || true
+
+            ok "remnawave-nginx перезагружен"
+        else
+            warn "Конфигурация remnawave-nginx не прошла проверку"
+        fi
+    fi
+
+    # Удаляем только правило внешнего HTTPS-порта.
+    if [[ "$https_port" =~ ^[0-9]+$ ]] &&
+       command -v ufw &>/dev/null
+    then
+        ufw --force delete allow "${https_port}/tcp" >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+        ok "Правило UFW ${https_port}/tcp удалено"
+    fi
+
+    # Удаляем саму панель.
+    if [[ -f "/etc/systemd/system/${PANEL_SVC:-telemt-panel}.service" ]] ||
+       id "${PANEL_USER:-telemt-panel}" &>/dev/null ||
+       [[ -e "${PANEL_BIN:-/usr/local/bin/telemt-panel}" ]]
+    then
         info "Удаление web-панели..."
+
         systemctl stop "${PANEL_SVC:-telemt-panel}" 2>/dev/null || true
         systemctl disable "${PANEL_SVC:-telemt-panel}" 2>/dev/null || true
+
         rm -f "/etc/systemd/system/${PANEL_SVC:-telemt-panel}.service"
         rm -f "/etc/sudoers.d/${PANEL_SVC:-telemt-panel}"
         rm -f "${PANEL_BIN:-/usr/local/bin/telemt-panel}"
-        rm -rf "${PANEL_CFG_DIR:-/etc/telemt-panel}" "${PANEL_DATA:-/var/lib/telemt-panel}"
+
+        rm -rf \
+            "${PANEL_CFG_DIR:-/etc/telemt-panel}" \
+            "${PANEL_DATA:-/var/lib/telemt-panel}"
+
         userdel "${PANEL_USER:-telemt-panel}" 2>/dev/null || true
         systemctl daemon-reload
+
         ok "Web-панель удалена"
     fi
 }
