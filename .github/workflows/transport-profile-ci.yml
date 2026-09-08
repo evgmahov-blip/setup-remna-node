@@ -15,6 +15,7 @@ jobs:
       - name: Bash syntax
         run: |
           bash -n setup_node.sh
+          bash -n setup_node_next.sh
           bash -n production/remnawave-transport-manager.sh
           bash -n production/rkn-watcher-manager.sh
 
