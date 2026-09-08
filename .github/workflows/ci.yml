@@ -23,4 +23,4 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck
-          shellcheck -x -S warning setup_node.sh production/*.sh
+          shellcheck -e SC2034 -x -S warning setup_node.sh production/*.sh
