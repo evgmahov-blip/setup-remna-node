@@ -38,10 +38,10 @@ jobs:
           chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target" "$T/reality.env"
 
           sudo env APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
-          jq empty "$T/remnawave-profiles/xhttp-reality.json"
-          jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
-          jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
-          jq -e '.inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq empty "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443"' "$T/remnawave-profiles/xhttp-reality.json"
 
       - name: Generate RAW SelfSteal profile
         run: |
@@ -60,12 +60,12 @@ jobs:
           chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/reality.env"
 
           sudo env APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
-          jq empty "$T/remnawave-profiles/raw-reality.json"
-          jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
-          jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
-          jq -e '.inbounds[0].streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$T/remnawave-profiles/raw-reality.json"
-          jq -e '.inbounds[0].streamSettings.realitySettings.xver == 1' "$T/remnawave-profiles/raw-reality.json"
-          jq -e '.inbounds[0].streamSettings.realitySettings.serverNames == ["node.example.com"]' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq empty "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.xver == 1' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.serverNames == ["node.example.com"]' "$T/remnawave-profiles/raw-reality.json"
 
       - name: Generate Hysteria2 profile
         run: |
@@ -80,7 +80,7 @@ jobs:
           chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/www/index.html"
 
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
-          jq empty "$T/remnawave-profiles/hysteria2-tls.json"
-          jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
-          jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
-          jq -e '.inbounds[0].streamSettings.hysteriaSettings.masquerade.type == "string"' "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo jq empty "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo jq -e '.inbounds[0].streamSettings.hysteriaSettings.masquerade.type == "string"' "$T/remnawave-profiles/hysteria2-tls.json"
