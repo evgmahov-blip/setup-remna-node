@@ -12,6 +12,9 @@ XHTTP_PORT="${XHTTP_PORT:-443}"
 HYSTERIA_PORT="${HYSTERIA_PORT:-443}"
 SELFSTEAL_PORT="${SELFSTEAL_PORT:-8443}"
 ENABLE_HYSTERIA2="${ENABLE_HYSTERIA2:-ask}"
+XRAY_CERT_DIR="/etc/xray/certs"
+XRAY_CERT_FILE="$XRAY_CERT_DIR/fullchain.pem"
+XRAY_KEY_FILE="$XRAY_CERT_DIR/privkey.pem"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
@@ -51,7 +54,8 @@ resolve_hysteria(){
     0|no|NO|false|FALSE|n|N) ENABLE_HYSTERIA2=0 ;;
     ask)
       local answer
-      read -r -p "Добавить Hysteria2 на UDP/443? [y/N]: " answer
+      printf '\nHysteria2 использует QUIC/UDP и TLS 1.3. В некоторых сетях РФ этот транспорт может фильтроваться.\n'
+      read -r -p "Добавить Hysteria2 как дополнительный транспорт на UDP/443? [y/N]: " answer
       case "${answer:-N}" in [Yy]*) ENABLE_HYSTERIA2=1 ;; *) ENABLE_HYSTERIA2=0 ;; esac
       ;;
     *) fail "ENABLE_HYSTERIA2 должен быть 0/1/ask" ;;
@@ -107,6 +111,48 @@ check_certs_for_hysteria(){
   [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
   [[ -s "$CERTS_DIR/fullchain.pem" ]] || fail "Для Hysteria2 нет $CERTS_DIR/fullchain.pem"
   [[ -s "$CERTS_DIR/privkey.pem" ]] || fail "Для Hysteria2 нет $CERTS_DIR/privkey.pem"
+  openssl x509 -in "$CERTS_DIR/fullchain.pem" -noout >/dev/null 2>&1 || fail "Некорректный fullchain.pem"
+  openssl pkey -in "$CERTS_DIR/privkey.pem" -noout >/dev/null 2>&1 || fail "Некорректный privkey.pem"
+}
+
+ensure_cert_mount(){
+  [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
+  [[ -f "$APP_DIR/docker-compose.yml" ]] || fail "Не найден $APP_DIR/docker-compose.yml"
+
+  local override="$APP_DIR/docker-compose.override.yml"
+  if [[ -f "$override" ]]; then
+    cp -a "$override" "$override.bak.$(date +%Y%m%d-%H%M%S)"
+  fi
+
+  cat > "$override" <<EOF
+services:
+  remnanode:
+    volumes:
+      - $CERTS_DIR:$XRAY_CERT_DIR:ro
+EOF
+
+  (
+    cd "$APP_DIR"
+    docker compose config >/dev/null
+  ) || fail "docker-compose.override.yml с сертификатами не прошел docker compose config"
+
+  log "Сертификаты Hysteria2 проброшены: $CERTS_DIR -> $XRAY_CERT_DIR:ro"
+}
+
+verify_cert_mount(){
+  [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
+  command -v docker >/dev/null 2>&1 || fail "Docker не найден"
+
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
+    (
+      cd "$APP_DIR"
+      docker compose up -d remnanode >/dev/null
+    ) || fail "Не удалось пересоздать remnanode с cert mount"
+
+    docker exec remnanode test -s "$XRAY_CERT_FILE" || fail "В контейнере нет $XRAY_CERT_FILE"
+    docker exec remnanode test -s "$XRAY_KEY_FILE" || fail "В контейнере нет $XRAY_KEY_FILE"
+    log "Проверка cert mount в контейнере: OK"
+  fi
 }
 
 write_profile(){
@@ -142,8 +188,8 @@ write_profile(){
           "alpn": ["h3"],
           "certificates": [
             {
-              "certificateFile": "/etc/xray/certs/fullchain.pem",
-              "keyFile": "/etc/xray/certs/privkey.pem"
+              "certificateFile": "$XRAY_CERT_FILE",
+              "keyFile": "$XRAY_KEY_FILE"
             }
           ]
         }
@@ -156,9 +202,7 @@ EOF
   umask 077
   cat > "$PROFILE_FILE" <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": {"loglevel": "warning"},
   "stats": {},
   "policy": {
     "levels": {
@@ -184,10 +228,7 @@ EOF
       "listen": "0.0.0.0",
       "port": $XHTTP_PORT,
       "protocol": "vless",
-      "settings": {
-        "clients": [],
-        "decryption": "none"
-      },
+      "settings": {"clients": [], "decryption": "none"},
       "sniffing": {
         "enabled": true,
         "routeOnly": true,
@@ -203,17 +244,7 @@ EOF
           "serverNames": ["$NODE_DOMAIN"],
           "privateKey": "$REALITY_PRIVATE_KEY",
           "minClientVer": "0.0.0",
-          "shortIds": ["$REALITY_SHORT_ID"],
-          "limitFallbackUpload": {
-            "afterBytes": 0,
-            "bytesPerSec": 1048576,
-            "burstBytesPerSec": 2097152
-          },
-          "limitFallbackDownload": {
-            "afterBytes": 0,
-            "bytesPerSec": 4194304,
-            "burstBytesPerSec": 8388608
-          }
+          "shortIds": ["$REALITY_SHORT_ID"]
         },
         "xhttpSettings": {
           "mode": "packet-up",
@@ -221,9 +252,7 @@ EOF
           "extra": {
             "mode": "packet-up",
             "path": "$XHTTP_PATH",
-            "xmux": {
-              "maxConcurrency": "1"
-            },
+            "xmux": {"maxConcurrency": "1"},
             "seqKey": "chunk_id",
             "sessionKey": "auth",
             "sessionIDKey": "auth",
@@ -236,14 +265,8 @@ EOF
     }$hysteria_block
   ],
   "outbounds": [
-    {
-      "tag": "DIRECT",
-      "protocol": "freedom"
-    },
-    {
-      "tag": "BLOCK",
-      "protocol": "blackhole"
-    }
+    {"tag": "DIRECT", "protocol": "freedom"},
+    {"tag": "BLOCK", "protocol": "blackhole"}
   ],
   "routing": {
     "domainStrategy": "AsIs",
@@ -295,7 +318,7 @@ Primary inbound:
   Fingerprint: firefox
 
 Optional Hysteria2: $([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && echo ENABLED || echo DISABLED)
-$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Tag: HYSTERIA2_TLS\n  Public port: 443/UDP\n  SNI: %s\n' "$NODE_DOMAIN")
+$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Tag: HYSTERIA2_TLS\n  Public port: 443/UDP\n  SNI: %s\n  Host certs: %s\n  Container certs: %s\n' "$NODE_DOMAIN" "$CERTS_DIR" "$XRAY_CERT_DIR")
 
 Full profile with private Reality key:
   $PROFILE_FILE
@@ -311,9 +334,6 @@ configure_firewall(){
   ufw allow 443/tcp comment 'XHTTP Reality' >/dev/null 2>&1 || true
   if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then
     ufw allow 443/udp comment 'Hysteria2' >/dev/null 2>&1 || true
-  else
-    # Do not delete an unrelated existing UDP/443 rule automatically.
-    :
   fi
   ufw reload >/dev/null 2>&1 || true
 }
@@ -325,6 +345,7 @@ show_result(){
   echo "Primary: $NODE_DOMAIN:443/TCP, path $XHTTP_PATH"
   if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then
     echo "Optional: $NODE_DOMAIN:443/UDP Hysteria2"
+    echo "Certificates: $CERTS_DIR -> $XRAY_CERT_DIR:ro"
   fi
   echo
   read -r -p "Показать полный Config Profile сейчас? [y/N]: " answer
@@ -343,6 +364,8 @@ main(){
   find_rw_core
   generate_reality_material
   check_certs_for_hysteria
+  ensure_cert_mount
+  verify_cert_mount
   write_profile
   write_public_summary
   configure_firewall
