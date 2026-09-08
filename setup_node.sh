@@ -122,8 +122,8 @@ print_profile_state(){
   if [[ "$h2" == 1 ]]; then printf '  Hysteria2:  ВКЛЮЧЕНА (UDP/443)\n'; else printf '  Hysteria2:  выключена\n'; fi
   printf '\n'
   if ! profile_exists; then
-    warn "Пока Config Profile не создан и не назначен ноде в Remnawave, внешний SelfSteal через :443 работать не обязан."
-    warn "Nginx на 127.0.0.1:8443 — только backend. Публичный :443 принадлежит rw-core/REALITY."
+    warn "Config Profile еще не создан. Поэтому внешний SelfSteal через :443 сейчас не обязан работать."
+    warn "127.0.0.1:8443 — внутренний backend; публичный TCP/443 принадлежит rw-core."
     printf '\n'
   fi
 }
@@ -144,12 +144,8 @@ run_profile_manager(){
   case "$choice" in
     1) ENABLE_HYSTERIA2=keep bash "$PRODUCTION_DIR/generate-remnawave-profile.sh" ;;
     2) ENABLE_HYSTERIA2=ask bash "$PRODUCTION_DIR/generate-remnawave-profile.sh" ;;
-    3)
-      if [[ -r "$APP_DIR/remnawave-ready.txt" ]]; then cat "$APP_DIR/remnawave-ready.txt"; else warn "Сначала создай профиль пунктом 1 или 2"; fi
-      ;;
-    4)
-      if profile_exists; then cat "$APP_DIR/config-profile.json"; else warn "Сначала создай профиль пунктом 1 или 2"; fi
-      ;;
+    3) if [[ -r "$APP_DIR/remnawave-ready.txt" ]]; then cat "$APP_DIR/remnawave-ready.txt"; else warn "Сначала создай профиль пунктом 1 или 2"; fi ;;
+    4) if profile_exists; then cat "$APP_DIR/config-profile.json"; else warn "Сначала создай профиль пунктом 1 или 2"; fi ;;
     5) run_selfsteal_test ;;
     0) return ;;
     *) warn "Неизвестный пункт" ;;
@@ -195,24 +191,24 @@ run_selfsteal_test(){
   [[ -n "$domain" ]] || { warn "Домен ноды не найден"; return 0; }
 
   echo '#################### НАЧАЛО ВЫВОДА: SELFSTEAL TEST ####################'
-  printf '1) Локальный backend 127.0.0.1:8443 ... '\n
+  printf '1) Локальный backend 127.0.0.1:8443 ...\n'
   local_code="$(curl -ksS --tls-max 1.2 --resolve "$domain:8443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$domain:8443/" 2>/dev/null || true)"
-  if [[ "$local_code" =~ ^2|3 ]]; then
+  if [[ "$local_code" =~ ^[23][0-9][0-9]$ ]]; then
     ok "backend отвечает HTTP $local_code"
   else
     warn "backend не отдал нормальный HTTP-ответ (код: ${local_code:-нет ответа})"
   fi
 
-  printf '2) Публичный REALITY fallback через локальный TCP/443 ... '\n
+  printf '2) REALITY fallback через локальный TCP/443 ...\n'
   code="$(curl -ksS --tls-max 1.2 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$domain/" 2>/dev/null || true)"
-  if [[ "$code" =~ ^2|3 ]]; then
-    ok "fallback через rw-core: HTTP $code"
+  if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
+    ok "fallback через rw-core отвечает HTTP $code"
   else
     warn "fallback через :443 не подтвержден (код: ${code:-нет ответа})"
     if ! profile_exists; then
-      warn "Причина ожидаемая: локальный Config Profile еще не создан."
+      warn "Причина ожидаемая: Config Profile еще не создан."
     else
-      warn "Если профиль создан локально, его еще нужно добавить/назначить ноде в панели Remnawave. Локальный JSON сам rw-core не активирует."
+      warn "Локальный JSON сам по себе rw-core не активирует: профиль должен быть создан/назначен ноде в панели Remnawave."
     fi
   fi
   echo '#################### КОНЕЦ ВЫВОДА: SELFSTEAL TEST ####################'
