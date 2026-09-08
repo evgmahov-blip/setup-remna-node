@@ -12,7 +12,6 @@ OVERRIDE_FILE="$APP_DIR/docker-compose.override.yml"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
-
 require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Запустите от root"; }
 
 resolve_domain(){
@@ -95,8 +94,8 @@ apply(){
 }
 
 verify(){
-  local i
-  for i in $(seq 1 20); do
+  local attempt
+  for attempt in $(seq 1 20); do
     if ss -lntH 2>/dev/null | grep -q "127.0.0.1:${SELFSTEAL_PORT}"; then
       log "SelfSteal backend: 127.0.0.1:${SELFSTEAL_PORT} TLS1.2"
       log "Hysteria2 cert mount: $CERTS_DIR -> /etc/xray/certs:ro"
