@@ -150,7 +150,8 @@ prepare_legacy_for_next(){
     return 1
   fi
 
-  if grep -Fq 'Ваш выбор [1]:' "$tmp" || grep -Fq 'Домен маскировки (decoy domain)' "$tmp"; then
+  if grep -Fq 'read -p "Ваш выбор [1]: " proto_choice' "$tmp" || \
+     grep -Fq 'read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain' "$tmp"; then
     rm -f "$tmp"
     printf '%b\n' "${RED}[ОШИБКА]${NC} В адаптированном July base остались старые transport/decoy prompts."
     return 1
