@@ -70,8 +70,15 @@ run_legacy(){
 
 run_transport(){
   local f="$WORK_DIR/remnawave-transport-manager.sh"
+  local xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh"
   fetch_module "production/remnawave-transport-manager.sh" "$f" || return 1
-  APP_DIR="$APP_DIR" bash "$f"
+  APP_DIR="$APP_DIR" bash "$f" || return 1
+
+  if [[ "$(cat "$APP_DIR/.transport" 2>/dev/null || true)" == "xhttp" ]]; then
+    echo -e "${CYAN}[XHTTP]${NC} Добавляю сохранённую per-node сигнатуру и Host extra..."
+    fetch_module "production/xhttp-signature-manager.sh" "$xhttp_sig" || return 1
+    APP_DIR="$APP_DIR" bash "$xhttp_sig"
+  fi
 }
 
 run_rkn(){
@@ -144,6 +151,7 @@ show_status(){
   printf '  %-22s %s\n' 'Transport profile:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality SNI:' "$(cat "$APP_DIR/.reality_sni" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality target:' "$(cat "$APP_DIR/.reality_target" 2>/dev/null || echo '-')"
+  printf '  %-22s %s\n' 'XHTTP signature:' "$( [[ -s "$APP_DIR/xhttp-signature.json" ]] && echo saved || echo '-' )"
   echo
   echo -e "${BLUE}[PORTS]${NC}"
   ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:2222[[:space:]]|:80[[:space:]])' || true
