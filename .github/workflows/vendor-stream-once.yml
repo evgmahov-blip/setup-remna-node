@@ -1,0 +1,55 @@
+name: vendor-stream-once
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+    paths:
+      - .github/workflows/vendor-stream-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/xhttp-raw-hysteria-from-july7
+          fetch-depth: 0
+
+      - name: Capture STREAM site
+        run: |
+          set -euo pipefail
+          rm -rf selfsteal/stream
+          mkdir -p selfsteal/stream
+
+          wget \
+            --quiet \
+            --timeout=20 \
+            --tries=3 \
+            --user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36' \
+            --page-requisites \
+            --convert-links \
+            --adjust-extension \
+            --no-host-directories \
+            --directory-prefix=selfsteal/stream \
+            https://rustream.remna.space/ || true
+
+          test -s selfsteal/stream/index.html
+          grep -Eqi '<!doctype|<html' selfsteal/stream/index.html
+          find selfsteal/stream -type f -maxdepth 5 -print
+
+      - name: Commit captured site
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add selfsteal/stream
+          if git diff --cached --quiet; then
+            echo 'STREAM snapshot is already current.'
+          else
+            git commit -m 'Vendor STREAM SelfSteal site snapshot'
+            git push origin HEAD:fix/xhttp-raw-hysteria-from-july7
+          fi
