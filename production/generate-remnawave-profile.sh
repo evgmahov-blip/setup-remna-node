@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
 PROFILE_FILE="${PROFILE_FILE:-$APP_DIR/config-profile.json}"
 PROFILE_PUBLIC_FILE="${PROFILE_PUBLIC_FILE:-$APP_DIR/config-profile-public.txt}"
+READY_FILE="${READY_FILE:-$APP_DIR/remnawave-ready.txt}"
 REALITY_ENV="${REALITY_ENV:-$APP_DIR/reality.env}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
 XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
@@ -132,7 +133,6 @@ ensure_cert_mount(){
 
 verify_cert_mount(){
   [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
-  command -v docker >/dev/null 2>&1 || fail "Docker не найден"
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
     docker exec remnanode test -s "$XRAY_CERT_FILE" || fail "В контейнере нет $XRAY_CERT_FILE"
     docker exec remnanode test -s "$XRAY_KEY_FILE" || fail "В контейнере нет $XRAY_KEY_FILE"
@@ -150,9 +150,12 @@ write_profile(){
       "listen": "0.0.0.0",
       "port": $HYSTERIA_PORT,
       "protocol": "hysteria",
-      "settings": {"version": 2, "users": []},
+      "settings": {
+        "version": 2,
+        "users": []
+      },
       "streamSettings": {
-        "method": "hysteria",
+        "network": "hysteria",
         "security": "tls",
         "hysteriaSettings": {
           "version": 2,
@@ -210,14 +213,17 @@ EOF
       "listen": "0.0.0.0",
       "port": $XHTTP_PORT,
       "protocol": "vless",
-      "settings": {"clients": [], "decryption": "none"},
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
       "sniffing": {
         "enabled": true,
         "routeOnly": true,
         "destOverride": ["http", "tls", "quic"]
       },
       "streamSettings": {
-        "method": "xhttp",
+        "network": "xhttp",
         "security": "reality",
         "realitySettings": {
           "show": false,
@@ -269,7 +275,11 @@ EOF
         ],
         "outboundTag": "BLOCK"
       },
-      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "BLOCK"}
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "BLOCK"
+      }
     ]
   }
 }
@@ -277,7 +287,7 @@ EOF
   chmod 600 "$PROFILE_FILE"
 }
 
-write_public_summary(){
+write_summaries(){
   umask 077
   cat > "$PROFILE_PUBLIC_FILE" <<EOF
 REMNAWAVE CONFIG PROFILE
@@ -300,11 +310,37 @@ $([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Tag: HYSTERIA2_TLS\n  Public port
 
 Full profile with private Reality key:
   $PROFILE_FILE
-
-Show full profile only when needed:
-  cat $PROFILE_FILE
 EOF
   chmod 600 "$PROFILE_PUBLIC_FILE"
+
+  cat > "$READY_FILE" <<EOF
+REMNAWAVE READY VALUES
+======================
+
+CONFIG PROFILE:
+  File: $PROFILE_FILE
+  Inbound: XHTTP_REALITY
+
+HOST XHTTP_REALITY:
+  Address: $NODE_DOMAIN
+  Port: 443
+  SNI: $NODE_DOMAIN
+  Host: $NODE_DOMAIN
+  Path: $XHTTP_PATH
+  Security: REALITY
+  Fingerprint: firefox
+  Public Key: $REALITY_PUBLIC_KEY
+  Short ID: $REALITY_SHORT_ID
+
+HYSTERIA2:
+  Enabled: $ENABLE_HYSTERIA2
+$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Inbound: HYSTERIA2_TLS\n  Address: %s\n  Port: 443/UDP\n  SNI: %s\n  ALPN: h3\n' "$NODE_DOMAIN" "$NODE_DOMAIN")
+
+SELFSTEAL:
+  Target: 127.0.0.1:$SELFSTEAL_PORT
+  TLS: 1.2 only
+EOF
+  chmod 600 "$READY_FILE"
 }
 
 configure_firewall(){
@@ -318,9 +354,9 @@ configure_firewall(){
 
 show_result(){
   echo
-  echo "XHTTP + REALITY profile created: $PROFILE_FILE"
-  echo "Public setup summary: $PROFILE_PUBLIC_FILE"
-  echo "Primary: $NODE_DOMAIN:443/TCP, path $XHTTP_PATH"
+  echo "Config Profile: $PROFILE_FILE"
+  echo "Ready values: $READY_FILE"
+  echo "Primary: $NODE_DOMAIN:443/TCP XHTTP + REALITY; path $XHTTP_PATH"
   if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then
     echo "Optional: $NODE_DOMAIN:443/UDP Hysteria2"
     echo "Certificates: $CERTS_DIR -> $XRAY_CERT_DIR:ro"
@@ -329,7 +365,7 @@ show_result(){
   read -r -p "Показать полный Config Profile сейчас? [y/N]: " answer
   case "${answer:-N}" in
     [Yy]*) cat "$PROFILE_FILE" ;;
-    *) cat "$PROFILE_PUBLIC_FILE" ;;
+    *) cat "$READY_FILE" ;;
   esac
 }
 
@@ -345,7 +381,7 @@ main(){
   ensure_cert_mount
   verify_cert_mount
   write_profile
-  write_public_summary
+  write_summaries
   configure_firewall
   show_result
   echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE PROFILE ####################'
