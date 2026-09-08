@@ -78,7 +78,10 @@ session_ip(){
 }
 
 panel_ip(){
-  [[ -r "$APP_DIR/.panel_ip" ]] && tr -d '[:space:]' < "$APP_DIR/.panel_ip"
+  if [[ -r "$APP_DIR/.panel_ip" ]]; then
+    tr -d '[:space:]' < "$APP_DIR/.panel_ip"
+  fi
+  return 0
 }
 
 run_upstream_menu(){
