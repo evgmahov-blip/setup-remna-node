@@ -14,8 +14,11 @@ OVERRIDE_FILE="$APP_DIR/docker-compose.override.yml"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
 REALITY_TARGET_FILE="$APP_DIR/.reality_target"
 REALITY_ROUTE_VERSION_FILE="$APP_DIR/.reality_route_version"
-REALITY_ROUTE_VERSION="2"
+REALITY_ROUTE_VERSION="3"
 REALITY_SNI_MODE="${REALITY_SNI_MODE:-keep}"
+REALITY_POOL_CACHE="$APP_DIR/reality-targets.cache"
+REALITY_POOL_SOURCE="https://raw.githubusercontent.com/evkir/reality-probe/main/reality_probe.py"
+REALITY_POOL_MAX_AGE="${REALITY_POOL_MAX_AGE:-604800}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.28}"
 
 log(){ printf '%s\n' "$*"; }
@@ -70,8 +73,45 @@ probe_reality_target(){
   return 0
 }
 
-choose_auto_camouflage(){
-  local candidates=(
+pool_needs_refresh(){
+  [[ -s "$REALITY_POOL_CACHE" ]] || return 0
+  local now mtime
+  now="$(date +%s)"
+  mtime="$(stat -c %Y "$REALITY_POOL_CACHE" 2>/dev/null || echo 0)"
+  (( now - mtime >= REALITY_POOL_MAX_AGE ))
+}
+
+refresh_reality_pool(){
+  local force="${1:-0}" src_tmp out_tmp count
+  [[ "$force" == 1 ]] || pool_needs_refresh || return 0
+
+  src_tmp="$(mktemp)"
+  out_tmp="$(mktemp)"
+  if curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 5 --max-time 20 "$REALITY_POOL_SOURCE" -o "$src_tmp"; then
+    awk '
+      /^BUILTIN_DOMAINS[[:space:]]*=/ {inside=1; next}
+      inside && /^[[:space:]]*\]/ {exit}
+      inside {print}
+    ' "$src_tmp" \
+      | sed -nE 's/^[[:space:]]*"([A-Za-z0-9.-]+)".*/\1/p' \
+      | grep -E '^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$' \
+      | sort -u > "$out_tmp" || true
+
+    count="$(wc -l < "$out_tmp" | tr -d ' ')"
+    if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 20 )); then
+      install -m 0600 "$out_tmp" "$REALITY_POOL_CACHE"
+      log "REALITY target pool обновлен из reality-probe: $count кандидатов"
+    else
+      warn "Внешний REALITY pool выглядит пустым/поврежденным; использую кэш/fallback"
+    fi
+  else
+    warn "Не удалось обновить REALITY target pool; использую кэш/fallback"
+  fi
+  rm -f "$src_tmp" "$out_tmp"
+}
+
+build_candidate_pool(){
+  local fallback=(
     www.microsoft.com
     www.cloudflare.com
     www.apple.com
@@ -80,10 +120,22 @@ choose_auto_camouflage(){
     www.yahoo.com
     www.bing.com
   )
-  local start i candidate
-  start=$((16#$(openssl rand -hex 2) % ${#candidates[@]}))
-  for ((i=0; i<${#candidates[@]}; i++)); do
-    candidate="${candidates[$(((start+i)%${#candidates[@]}))]}"
+  CANDIDATES=()
+  if [[ -s "$REALITY_POOL_CACHE" ]]; then
+    mapfile -t CANDIDATES < "$REALITY_POOL_CACHE"
+  fi
+  CANDIDATES+=("${fallback[@]}")
+}
+
+choose_auto_camouflage(){
+  local force_refresh="${1:-0}" start i candidate
+  refresh_reality_pool "$force_refresh"
+  build_candidate_pool
+  ((${#CANDIDATES[@]} > 0)) || return 1
+
+  start=$((16#$(openssl rand -hex 2) % ${#CANDIDATES[@]}))
+  for ((i=0; i<${#CANDIDATES[@]}; i++)); do
+    candidate="${CANDIDATES[$(((start+i)%${#CANDIDATES[@]}))]}"
     if probe_reality_target "$candidate"; then
       REALITY_SNI="$candidate"
       REALITY_TARGET="${candidate}:443"
@@ -96,13 +148,14 @@ choose_auto_camouflage(){
 resolve_reality_route(){
   REALITY_SNI="${REALITY_SNI:-}"
   REALITY_TARGET="${REALITY_TARGET:-}"
-  local saved_version=""
+  local saved_version="" force_refresh=0
   [[ -r "$REALITY_ROUTE_VERSION_FILE" ]] && saved_version="$(tr -d '[:space:]' < "$REALITY_ROUTE_VERSION_FILE")"
 
   case "$REALITY_SNI_MODE" in
     rotate)
       REALITY_SNI=''
       REALITY_TARGET=''
+      force_refresh=1
       ;;
     manual)
       if [[ -z "$REALITY_SNI" ]]; then
@@ -118,6 +171,7 @@ resolve_reality_route(){
         [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
       elif [[ "$REALITY_SNI_MODE" == keep && -n "$saved_version" && "$saved_version" != "$REALITY_ROUTE_VERSION" ]]; then
         warn "Формат REALITY camouflage route обновлен: подбираю target заново один раз"
+        force_refresh=1
       fi
       ;;
     *) fail "REALITY_SNI_MODE должен быть keep/auto/rotate/manual" ;;
@@ -128,11 +182,14 @@ resolve_reality_route(){
       warn "Сохраненный camouflage target $REALITY_SNI больше не проходит проверку — выбираю новый"
       REALITY_SNI=''
       REALITY_TARGET=''
+      force_refresh=1
     fi
   fi
 
   if [[ -z "$REALITY_SNI" || -z "$REALITY_TARGET" ]]; then
-    choose_auto_camouflage || fail "Не удалось подобрать REALITY camouflage target с TLS1.3 и валидным сертификатом"
+    choose_auto_camouflage "$force_refresh" || fail "Не удалось подобрать REALITY camouflage target с TLS1.3 и валидным сертификатом"
+  else
+    refresh_reality_pool 0
   fi
 
   [[ "$REALITY_TARGET" == "${REALITY_SNI}:443" ]] || fail "Для этой схемы REALITY target должен совпадать с camouflage SNI: ${REALITY_SNI}:443"
