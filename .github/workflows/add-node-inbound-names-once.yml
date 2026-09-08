@@ -35,39 +35,40 @@ jobs:
           s = s.replace(old, new, 1)
 
           anchor = '\nxray_cmd(){\n'
-          insert = r'''
-
-node_name(){
-  local n="${NODE_NAME:-}" detected=""
-  if [[ -z "$n" && -r "$NODE_NAME_FILE" ]]; then
-    n="$(head -n1 "$NODE_NAME_FILE" | tr -d '\r\n')"
-  fi
-  if [[ -z "$n" ]]; then
-    detected="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
-    n="$detected"
-  fi
-  if [[ -z "$n" ]]; then
-    n="$(node_domain)"
-    n="${n%%.*}"
-  fi
-  n="$(printf '%s' "$n" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
-  [[ -n "$n" ]] || { fail "Не удалось определить имя сервера для inbound"; return 1; }
-  printf '%s\n' "$n" > "$NODE_NAME_FILE"
-  chmod 600 "$NODE_NAME_FILE"
-  printf '%s' "$n"
-}
-
-inbound_name(){
-  local base transport="$1"
-  base="$(node_name)" || return 1
-  case "$transport" in
-    xhttp) printf '%s-xHTTP' "$base" ;;
-    raw) printf '%s-RAW' "$base" ;;
-    hysteria) printf '%s-Hysteria2' "$base" ;;
-    *) fail "Неизвестный транспорт для имени inbound: $transport"; return 1 ;;
-  esac
-}
-'''
+          insert = "\n".join([
+              '',
+              'node_name(){',
+              '  local n="${NODE_NAME:-}" detected=""',
+              '  if [[ -z "$n" && -r "$NODE_NAME_FILE" ]]; then',
+              '    n="$(head -n1 "$NODE_NAME_FILE" | tr -d \'\\r\\n\')"',
+              '  fi',
+              '  if [[ -z "$n" ]]; then',
+              '    detected="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"',
+              '    n="$detected"',
+              '  fi',
+              '  if [[ -z "$n" ]]; then',
+              '    n="$(node_domain)"',
+              '    n="${n%%.*}"',
+              '  fi',
+              '  n="$(printf \'%s\' "$n" | sed -E \'s/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//\')"',
+              '  [[ -n "$n" ]] || { fail "Не удалось определить имя сервера для inbound"; return 1; }',
+              '  printf \'%s\\n\' "$n" > "$NODE_NAME_FILE"',
+              '  chmod 600 "$NODE_NAME_FILE"',
+              '  printf \'%s\' "$n"',
+              '}',
+              '',
+              'inbound_name(){',
+              '  local base transport="$1"',
+              '  base="$(node_name)" || return 1',
+              '  case "$transport" in',
+              '    xhttp) printf \'%s-xHTTP\' "$base" ;;',
+              '    raw) printf \'%s-RAW\' "$base" ;;',
+              '    hysteria) printf \'%s-Hysteria2\' "$base" ;;',
+              '    *) fail "Неизвестный транспорт для имени inbound: $transport"; return 1 ;;',
+              '  esac',
+              '}',
+              ''
+          ])
           if anchor not in s:
               raise SystemExit('xray_cmd anchor not found')
           s = s.replace(anchor, insert + anchor, 1)
