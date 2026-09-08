@@ -47,14 +47,23 @@ restart_nginx(){
 deploy_stream(){
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
-  fetch_static "$STREAM_URL" "$tmpdir/index.html"
-  grep -Eqi '<!doctype|<html' "$tmpdir/index.html" || { fail 'STREAM index.html не похож на HTML'; return 1; }
+
+  if ! fetch_static "$STREAM_URL" "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    return 1
+  fi
+  if ! grep -Eqi '<!doctype|<html' "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    fail 'STREAM index.html не похож на HTML'
+    return 1
+  fi
+
   prepare_www
   install -m 0644 "$tmpdir/index.html" "$WWW_DIR/index.html"
   printf 'stream\n' > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
   rm -f "$RADIO_ADMIN_FILE"
+  rm -rf -- "$tmpdir"
   restart_nginx
   log "[OK] SelfSteal сайт: STREAM (pinned $STREAM_REF)"
 }
@@ -62,11 +71,25 @@ deploy_stream(){
 deploy_radio(){
   local tmpdir admin_name domain
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
-  fetch_static "$RADIO_BASE/index.html" "$tmpdir/index.html"
-  fetch_static "$RADIO_BASE/admin.html" "$tmpdir/admin.html"
-  grep -Eqi '<!doctype|<html' "$tmpdir/index.html" || { fail 'RADIO index.html не похож на HTML'; return 1; }
-  grep -Eqi '<!doctype|<html' "$tmpdir/admin.html" || { fail 'RADIO admin.html не похож на HTML'; return 1; }
+
+  if ! fetch_static "$RADIO_BASE/index.html" "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    return 1
+  fi
+  if ! fetch_static "$RADIO_BASE/admin.html" "$tmpdir/admin.html"; then
+    rm -rf -- "$tmpdir"
+    return 1
+  fi
+  if ! grep -Eqi '<!doctype|<html' "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    fail 'RADIO index.html не похож на HTML'
+    return 1
+  fi
+  if ! grep -Eqi '<!doctype|<html' "$tmpdir/admin.html"; then
+    rm -rf -- "$tmpdir"
+    fail 'RADIO admin.html не похож на HTML'
+    return 1
+  fi
 
   if [[ -r "$RADIO_ADMIN_FILE" ]]; then
     admin_name="$(tr -d '\r\n' < "$RADIO_ADMIN_FILE")"
@@ -83,6 +106,7 @@ deploy_radio(){
   printf 'radio\n' > "$STATE_FILE"
   printf '%s\n' "$admin_name" > "$RADIO_ADMIN_FILE"
   chmod 600 "$STATE_FILE" "$RADIO_ADMIN_FILE"
+  rm -rf -- "$tmpdir"
   restart_nginx
 
   domain="$(cat "$APP_DIR/.node_domain" 2>/dev/null || hostname -f 2>/dev/null || hostname)"
