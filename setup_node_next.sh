@@ -15,7 +15,7 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
-  [production/selfsteal-site-manager.sh]="e0e9b24bf8c5cdbdf8b7714d12e69d94e6d775031802358c209a4e06c5fe75d4"
+  [production/selfsteal-site-manager.sh]="1dcf365170dceda921106c32bf9498658c284d24261d3f1eea04e92f633da3c2"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="25ebe8434d96b5b55d248ec709e275913d9a227518b978b8bd0be7f3e0784af9"
 )
