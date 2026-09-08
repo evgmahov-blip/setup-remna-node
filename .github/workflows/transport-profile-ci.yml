@@ -24,6 +24,7 @@ jobs:
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
           printf 'node.example.com\n' > "$T/.node_domain"
           printf 'www.microsoft.com\n' > "$T/.reality_sni"
           printf 'www.microsoft.com:443\n' > "$T/.reality_target"
@@ -34,13 +35,14 @@ jobs:
           REALITY_SERVER_NAME=www.microsoft.com
           REALITY_TARGET=www.microsoft.com:443
           EOF
+          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target" "$T/reality.env"
 
-          printf '1\n' | APP_DIR="$T" bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
+          printf '1\n' | sudo env APP_DIR="$T" bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
           jq empty "$T/remnawave-profiles/xhttp-reality.json"
           jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
           jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
 
-          printf '1\n' | APP_DIR="$T" bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
+          printf '1\n' | sudo env APP_DIR="$T" bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
           jq empty "$T/remnawave-profiles/raw-reality.json"
           jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
           jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
@@ -50,11 +52,13 @@ jobs:
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
           printf 'node.example.com\n' > "$T/.node_domain"
           printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
           printf 'dummy-key\n' > "$T/certs/privkey.pem"
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem"
 
-          APP_DIR="$T" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
+          sudo env APP_DIR="$T" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
           jq empty "$T/remnawave-profiles/hysteria2-tls.json"
           jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
           jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
