@@ -284,16 +284,22 @@ REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
    Это намеренно: публичный TCP/$PUBLIC_TCP_PORT принадлежит SelfSteal frontend.
 
 3. MANAGEMENT -> HOSTS -> CREATE HOST
-   Remark:      $HOST_REMARK
-   Inbound:     XHTTP_REALITY
-   Address:     $NODE_DOMAIN
-   Port:        $PUBLIC_TCP_PORT
-   SNI:         $REALITY_SNI
-   Host:        $REALITY_SNI
-   Path:        $XHTTP_PATH
-   Fingerprint: firefox
-   Public key:  $REALITY_PUBLIC_KEY
-   Short ID:    $REALITY_SHORT_ID
+   Remark:          $HOST_REMARK
+   Inbound:         XHTTP_REALITY
+   Address:         $NODE_DOMAIN
+   Port:            $PUBLIC_TCP_PORT
+   Security Layer:  DEFAULT / НЕ ПЕРЕОПРЕДЕЛЯТЬ
+   SNI:             $REALITY_SNI
+   Host:            ОСТАВИТЬ ПУСТЫМ / НЕ ПЕРЕОПРЕДЕЛЯТЬ
+   Path:            $XHTTP_PATH
+   Fingerprint:     firefox
+
+ВАЖНО: в Host НЕ выбирай Security Layer = TLS.
+Inbound уже имеет streamSettings.security = reality, поэтому Host должен наследовать REALITY из inbound.
+Если принудительно выбрать TLS, Remnawave сгенерирует TLS-клиента вместо REALITY, и соединение через nginx -> Xray не пройдет.
+Public Key и Short ID также наследуются из realitySettings выбранного inbound:
+   Public key:      $REALITY_PUBLIC_KEY
+   Short ID:        $REALITY_SHORT_ID
 
 ВАЖНО ПО REALITY CAMOUFLAGE
 ---------------------------
@@ -301,14 +307,7 @@ SNI и target — одна и та же проверенная внешняя HT
   SNI:    $REALITY_SNI
   target: $REALITY_TARGET
 
-Установщик принимает цель только если:
-  - имя резолвится в публичный IPv4;
-  - TLS 1.3 handshake проходит;
-  - сертификат валиден именно для выбранного SNI;
-  - SNI не совпадает с доменом SelfSteal.
-
-Этот SNI — НЕ адрес ноды и НЕ секретный поддомен. Клиент подключается к $NODE_DOMAIN:$PUBLIC_TCP_PORT,
-а camouflage SNI нужен для маршрутизации nginx и REALITY-маскировки.
+Клиент подключается к $NODE_DOMAIN:$PUBLIC_TCP_PORT, а camouflage SNI используется для nginx SNI routing и REALITY.
 
 EXTERNAL XRAY_JSON
 ------------------
@@ -341,6 +340,7 @@ XHTTP internal inbound: 127.0.0.1:$XRAY_TCP_PORT
 REALITY camouflage route: CONFIGURED (use Host-values menu to reveal SNI)
 XHTTP path: $XHTTP_PATH
 Host Remark: $HOST_REMARK
+Host Security Layer: DEFAULT (inherit REALITY)
 Hysteria2: $ENABLE_HYSTERIA2
 EOF
   chmod 600 "$PROFILE_PUBLIC_FILE"
