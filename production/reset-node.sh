@@ -22,6 +22,17 @@ KNOWN_CONTAINERS=(
   telemt-panel
 )
 
+app_dir_has_real_node(){
+  [[ -d "$APP_DIR" ]] || return 1
+  [[ -f "$APP_DIR/docker-compose.yml" ]] && return 0
+  [[ -f "$APP_DIR/.env" ]] && return 0
+  [[ -f "$APP_DIR/.node_domain" ]] && return 0
+  [[ -f "$APP_DIR/.protocol" ]] && return 0
+  [[ -f "$APP_DIR/nginx.conf" ]] && return 0
+  [[ -d "$APP_DIR/certs" ]] && find "$APP_DIR/certs" -type f -maxdepth 1 -print -quit 2>/dev/null | grep -q . && return 0
+  return 1
+}
+
 has_old_stack(){
   local found=1 name
   if command -v docker >/dev/null 2>&1; then
@@ -29,7 +40,7 @@ has_old_stack(){
       if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"; then found=0; fi
     done
   fi
-  [[ -e "$APP_DIR" ]] && found=0
+  app_dir_has_real_node && found=0
   [[ -e /opt/remna-node ]] && found=0
   [[ -e /opt/remnawave-node ]] && found=0
   [[ -e /opt/telemt ]] && found=0
@@ -43,9 +54,13 @@ show_detected(){
     docker ps -a --format '  container: {{.Names}}  image={{.Image}}  status={{.Status}}' 2>/dev/null \
       | grep -Ei 'remna|xray|telemt|caddy|nginx' || true
   fi
-  for p in "$APP_DIR" /opt/remna-node /opt/remnawave-node /opt/telemt "$LOG_DIR"; do
+  app_dir_has_real_node && printf '  node path: %s\n' "$APP_DIR"
+  for p in /opt/remna-node /opt/remnawave-node /opt/telemt "$LOG_DIR"; do
     [[ -e "$p" ]] && printf '  path: %s\n' "$p"
   done
+  if [[ -d "$APP_DIR/installer" ]] && ! app_dir_has_real_node; then
+    echo "  installer cache: $APP_DIR/installer (НЕ считается старой нодой)"
+  fi
   if [[ -e /etc/caddy/Caddyfile ]]; then
     if grep -qiE 'remna|xray|telemt|/dev/shm/nginx.sock' /etc/caddy/Caddyfile 2>/dev/null; then
       echo '  caddy: /etc/caddy/Caddyfile содержит Remna/Xray/Telemt-конфигурацию'
@@ -81,7 +96,6 @@ stop_remove_known_containers(){
     fi
   done
 
-  # Дополнительно удаляем только контейнеры с явно Remna/Xray/Telemt-именами.
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     log "Удаляю старый профильный контейнер: $name"
@@ -96,7 +110,6 @@ remove_old_files(){
   rm -f /etc/letsencrypt/renewal-hooks/deploy/copy-remnanode-certs.sh
   rm -f /usr/local/bin/remnanode
 
-  # WEBROOT используется этой нодой как SelfSteal. Очищаем содержимое, но не /var/www целиком.
   if [[ -d "$WEBROOT" ]]; then
     find "$WEBROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   fi
@@ -115,8 +128,6 @@ cleanup_old_caddy(){
 
 cleanup_ufw_profile_rules(){
   command -v ufw >/dev/null 2>&1 || return 0
-  # Не сбрасываем UFW целиком, чтобы не потерять SSH/чужие правила.
-  # Удаляем только правила, которые предыдущие версии этого проекта создавали по comment/spec.
   local n
   while true; do
     n="$(ufw status numbered 2>/dev/null | awk '/Remnanode|Xray Incoming|Xray Custom|Hysteria2|XHTTP Reality|HTTP \/ Certbot|HTTP Certbot|Certbot HTTP-01/ {gsub(/\[|\]/,"",$1); print $1; exit}')"
@@ -141,6 +152,9 @@ main(){
   echo '#################### НАЧАЛО ВЫВОДА: RESET OLD NODE ####################'
   require_root
   if ! has_old_stack; then
+    if [[ -d "$APP_DIR/installer" ]]; then
+      log "Найден только кэш текущего установщика: $APP_DIR/installer. Это не старая нода."
+    fi
     log 'Старая Remna/Proxy-конфигурация не обнаружена. Очистка не требуется.'
     echo '#################### КОНЕЦ ВЫВОДА: RESET OLD NODE ####################'
     return 0
