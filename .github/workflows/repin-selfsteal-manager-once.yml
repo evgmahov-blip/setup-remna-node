@@ -32,9 +32,10 @@ jobs:
 
           p = pathlib.Path('setup_node_next.sh')
           s = p.read_text()
+          replacement = 'MODULE_REF="' + '$' + '{REMNANODE_REPO_REF:-' + ref + '}"'
           s, n = re.subn(
               r'MODULE_REF="\$\{REMNANODE_REPO_REF:-[0-9a-f]{40}\}"',
-              f'MODULE_REF="${{REMNANODE_REPO_REF:-{ref}}}"',
+              replacement,
               s,
               count=1,
           )
