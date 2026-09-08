@@ -26,47 +26,19 @@ jobs:
           p = Path('setup_node_next.sh')
           s = p.read_text()
 
-          s = s.replace(
-              'MODULE_REF="${REMNANODE_REPO_REF:-fb4460702eccfff7268a9e5f1100d622dfae3fa6}"',
-              'MODULE_REF="${REMNANODE_REPO_REF:-121a6d1d74d72454758f278169b0144c91aa0f9e}"'
-          )
+          old = '  if bash "$f"; then\n    if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then\n'
+          new = '  if bash "$f"; then\n    echo -e "${GREEN}[NETWORK]${NC} Применяю проверенный NEXT-профиль сети: fq + BBR по умолчанию, если BBR доступен."\n    if ! run_network_tuning; then\n      echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Базовая установка завершена, но сетевой профиль прошёл не все проверки."\n    fi\n    if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then\n'
+          if '[NETWORK]' not in s:
+              if old not in s:
+                  raise SystemExit('run_legacy insertion point not found')
+              s = s.replace(old, new, 1)
 
-          needle = '  [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"\n'
-          add = needle + '  [production/network-tuning-manager.sh]="25ebe8434d96b5b55d248ec709e275913d9a227518b978b8bd0be7f3e0784af9"\n'
-          if 'production/network-tuning-manager.sh' not in s:
-              s = s.replace(needle, add)
-
-          marker = 'run_selfsteal_default(){\n'
-          fn = '''run_network_tuning(){
-            local f="$WORK_DIR/network-tuning-manager.sh"
-            fetch_module "production/network-tuning-manager.sh" "$f" || return 1
-            bash "$f" apply
-          }
-
-          '''
-          if 'run_network_tuning(){' not in s:
-              s = s.replace(marker, fn + marker)
-
-          old = '''  if bash "$f"; then
-            if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then
-          '''
-          new = '''  if bash "$f"; then
-            echo -e "${GREEN}[NETWORK]${NC} Применяю проверенный NEXT-профиль сети: fq + BBR по умолчанию, если BBR доступен."
-            if ! run_network_tuning; then
-              echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Базовая установка завершена, но сетевой профиль прошёл не все проверки."
-            fi
-            if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then
-          '''
-          if old in s and '[NETWORK]' not in s:
-              s = s.replace(old, new)
-
-          status_old = '''  printf '  %-22s %s\\n' 'SelfSteal site:' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo 'stream (default)')"
-          '''
-          status_new = status_old + '''  printf '  %-22s %s\\n' 'TCP CC:' "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '-')"
-            printf '  %-22s %s\\n' 'Default qdisc:' "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo '-')"
-          '''
+          status_old = '  printf \'  %-22s %s\\n\' \'SelfSteal site:\' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo \'stream (default)\')"\n'
+          status_new = status_old + '  printf \'  %-22s %s\\n\' \'TCP CC:\' "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo \'-\')"\n  printf \'  %-22s %s\\n\' \'Default qdisc:\' "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo \'-\')"\n'
           if "'TCP CC:'" not in s:
-              s = s.replace(status_old, status_new)
+              if status_old not in s:
+                  raise SystemExit('status insertion point not found')
+              s = s.replace(status_old, status_new, 1)
 
           p.write_text(s)
           PY
@@ -74,7 +46,7 @@ jobs:
           bash -n setup_node_next.sh
           grep -q '121a6d1d74d72454758f278169b0144c91aa0f9e' setup_node_next.sh
           grep -q 'production/network-tuning-manager.sh' setup_node_next.sh
-          grep -q 'run_network_tuning' setup_node_next.sh
+          grep -q '\[NETWORK\]' setup_node_next.sh
           grep -q "'TCP CC:'" setup_node_next.sh
 
       - name: Commit wrapper
@@ -86,6 +58,6 @@ jobs:
           if git diff --cached --quiet; then
             echo 'Wrapper already wired.'
           else
-            git commit -m 'Enable verified BBR network tuning by default'
+            git commit -m 'Finish verified BBR network tuning wiring'
             git push origin HEAD:fix/xhttp-raw-hysteria-from-july7
           fi
