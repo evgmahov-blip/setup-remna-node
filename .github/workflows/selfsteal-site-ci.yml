@@ -1,0 +1,69 @@
+name: selfsteal-site-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+      - custom
+  pull_request:
+    branches:
+      - custom
+
+jobs:
+  validate-selfsteal-sites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and immutable module manifest
+        run: |
+          set -euo pipefail
+          bash -n setup_node_next.sh
+          bash -n production/selfsteal-site-manager.sh
+          sha256sum -c production/modules.sha256
+          grep -Eq '^MODULE_REF="\$\{REMNANODE_REPO_REF:-[0-9a-f]{40}\}"$' setup_node_next.sh
+          grep -q '\[production/selfsteal-site-manager.sh\]' setup_node_next.sh
+          grep -q 'SelfSteal сайт — STREAM / RADIO' setup_node_next.sh
+
+      - name: Default is STREAM
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/www"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
+          test "$(sudo cat "$T/.selfsteal_site")" = stream
+          sudo test -s "$T/www/index.html"
+          sudo grep -qi 'mstream' "$T/www/index.html"
+
+      - name: RADIO has hidden persistent admin path
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/www"
+          printf 'node.example.com\n' > "$T/.node_domain"
+
+          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh radio
+          test "$(sudo cat "$T/.selfsteal_site")" = radio
+          ADMIN1="$(sudo cat "$T/.selfsteal_radio_admin")"
+          [[ "$ADMIN1" =~ ^manage-[0-9a-f]{24}\.html$ ]]
+          sudo test -s "$T/www/$ADMIN1"
+          ! sudo grep -q 'Управление' "$T/www/index.html"
+
+          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
+          test "$(sudo cat "$T/.selfsteal_site")" = radio
+          ADMIN2="$(sudo cat "$T/.selfsteal_radio_admin")"
+          test "$ADMIN1" = "$ADMIN2"
+          sudo test -s "$T/www/$ADMIN2"
+
+      - name: Pinned manager fetched by wrapper matches checksum
+        run: |
+          set -euo pipefail
+          REF="$(sed -nE 's/^MODULE_REF="\$\{REMNANODE_REPO_REF:-([0-9a-f]{40})\}"/\1/p' setup_node_next.sh)"
+          WANT="$(awk '$2 == "production/selfsteal-site-manager.sh" {print $1}' production/modules.sha256)"
+          test -n "$REF"
+          test -n "$WANT"
+          curl -fsSL --proto '=https' \
+            "https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${REF}/production/selfsteal-site-manager.sh" \
+            -o /tmp/selfsteal-site-manager.sh
+          echo "$WANT  /tmp/selfsteal-site-manager.sh" | sha256sum -c -
