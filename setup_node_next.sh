@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-fb4460702eccfff7268a9e5f1100d622dfae3fa6}"
+MODULE_REF="${REMNANODE_REPO_REF:-121a6d1d74d72454758f278169b0144c91aa0f9e}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
@@ -17,6 +17,7 @@ declare -A MODULE_SHA256=(
   [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
   [production/selfsteal-site-manager.sh]="88be2227ef895061e95f8cbca008ec39df951e322cc230ad81ddf57d543eba26"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
+  [production/network-tuning-manager.sh]="25ebe8434d96b5b55d248ec709e275913d9a227518b978b8bd0be7f3e0784af9"
 )
 
 RED='\033[0;31m'
@@ -88,6 +89,12 @@ fetch_module(){
   local rel="$1" dst="$2" want="${MODULE_SHA256[$1]:-}"
   [[ -n "$want" ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} Нет эталонного SHA256 для $rel"; return 1; }
   fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel@${MODULE_REF}" "$want"
+}
+
+run_network_tuning(){
+  local f="$WORK_DIR/network-tuning-manager.sh"
+  fetch_module "production/network-tuning-manager.sh" "$f" || return 1
+  bash "$f" apply
 }
 
 run_selfsteal_default(){
@@ -243,6 +250,8 @@ show_status(){
   printf '  %-22s %s\n' 'Reality SNI:' "$(cat "$APP_DIR/.reality_sni" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality target:' "$(cat "$APP_DIR/.reality_target" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'SelfSteal site:' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo 'stream (default)')"
+  printf '  %-22s %s\n' 'TCP CC:' "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '-')"
+  printf '  %-22s %s\n' 'Default qdisc:' "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'XHTTP signature:' "$( [[ -s "$APP_DIR/xhttp-signature.json" ]] && echo saved || echo '-' )"
   echo
   echo -e "${BLUE}[PORTS]${NC}"
