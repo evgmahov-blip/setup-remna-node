@@ -258,6 +258,39 @@ jobs:
           sudo jq -e '.inbounds[0].streamSettings.hysteriaSettings.masquerade.type == "string"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo xray run -test -c "$T/remnawave-profiles/hysteria2-tls.json"
 
+      - name: Generate and validate combined XHTTP plus Hysteria2 profile
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs" "$T/www"
+          chmod 755 "$T" "$T/certs" "$T/www"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf '<html><body>selfsteal</body></html>\n' > "$T/www/index.html"
+          cat > "$T/nginx.conf" <<'NGINX'
+          server {
+              listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+          }
+          NGINX
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=node.example.com' \
+            -keyout "$T/certs/privkey.pem" -out "$T/certs/fullchain.pem" >/dev/null 2>&1
+          sudo mkdir -p /etc/xray/certs
+          sudo cp "$T/certs/fullchain.pem" /etc/xray/certs/fullchain.pem
+          sudo cp "$T/certs/privkey.pem" /etc/xray/certs/privkey.pem
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/www/index.html" "$T/nginx.conf"
+
+          sudo env PATH="$PATH" APP_DIR="$T" WWW_DIR="$T/www" CAMOUFLAGE_MODE=selfsteal XHTTP_SIGNATURE_MODE=none \
+            bash production/remnawave-transport-manager.sh combined >/tmp/combined.out
+          C="$T/remnawave-profiles/xhttp-hysteria2.json"
+          sudo jq -e '.inbounds | length == 2' "$C"
+          sudo jq -e '[.inbounds[].streamSettings.network] | sort == ["hysteria","xhttp"]' "$C"
+          sudo jq -e '.inbounds[] | select(.streamSettings.network == "xhttp") | .streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$C"
+          sudo jq -e '.inbounds[] | select(.streamSettings.network == "hysteria") | .streamSettings.tlsSettings.alpn == ["h3"]' "$C"
+          sudo grep -q '^Address: node.example.com$' "$T/remnawave-profiles/host-hysteria2.txt"
+          sudo grep -q '^Port: 443$' "$T/remnawave-profiles/host-hysteria2.txt"
+          sudo grep -q '^ALPN: h3$' "$T/remnawave-profiles/host-hysteria2.txt"
+          test "$(sudo cat "$T/.transport")" = combined
+          sudo xray run -test -c "$C"
+
       - name: RKN apply precheck works without SSH environment
         run: |
           set -euo pipefail
