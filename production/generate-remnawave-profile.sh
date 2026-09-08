@@ -13,6 +13,7 @@ NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
 XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
 HYSTERIA_STATE_FILE="$APP_DIR/.hysteria2-enabled"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
+REALITY_TARGET_FILE="$APP_DIR/.reality_target"
 PUBLIC_TCP_PORT="${PUBLIC_TCP_PORT:-443}"
 XRAY_TCP_PORT="${XRAY_TCP_PORT:-10443}"
 HYSTERIA_PORT="${HYSTERIA_PORT:-443}"
@@ -36,12 +37,12 @@ resolve_domain(){
   HOST_REMARK="${HOST_REMARK:-${first^^}-XHTTP}"
 }
 
-resolve_reality_sni(){
+resolve_reality_route(){
   REALITY_SNI="${REALITY_SNI:-}"
+  REALITY_TARGET="${REALITY_TARGET:-}"
   [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
-  [[ -n "$REALITY_SNI" ]] || REALITY_SNI="www.${NODE_DOMAIN}"
-  printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
-  chmod 600 "$REALITY_SNI_FILE"
+  [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
+  [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]] || fail "Private REALITY route еще не создан. Сначала настрой SelfSteal frontend."
 }
 
 gen_path(){ printf '/api/%s/%s.ts\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 8)"; }
@@ -110,7 +111,7 @@ REALITY_PRIVATE_KEY=$REALITY_PRIVATE_KEY
 REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY
 REALITY_SHORT_ID=$REALITY_SHORT_ID
 REALITY_SERVER_NAME=$REALITY_SNI
-REALITY_TARGET=127.0.0.1:$SELFSTEAL_PORT
+REALITY_TARGET=$REALITY_TARGET
 EOF
   chmod 600 "$REALITY_ENV"
 }
@@ -195,12 +196,22 @@ EOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "target": "127.0.0.1:$SELFSTEAL_PORT",
+          "target": "$REALITY_TARGET",
           "xver": 0,
           "serverNames": ["$REALITY_SNI"],
           "privateKey": "$REALITY_PRIVATE_KEY",
           "minClientVer": "0.0.0",
-          "shortIds": ["$REALITY_SHORT_ID"]
+          "shortIds": ["$REALITY_SHORT_ID"],
+          "limitFallbackUpload": {
+            "afterBytes": 10485760,
+            "bytesPerSec": 2097152,
+            "burstBytesPerSec": 5242880
+          },
+          "limitFallbackDownload": {
+            "afterBytes": 10485760,
+            "bytesPerSec": 2097152,
+            "burstBytesPerSec": 5242880
+          }
         },
         "xhttpSettings": {
           "mode": "packet-up",
@@ -274,13 +285,19 @@ REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
    Remark:      $HOST_REMARK
    Inbound:     XHTTP_REALITY
    Address:     $NODE_DOMAIN
-   Port:        $PUBLIC_TCP_PORT   <-- вручную override; НЕ $XRAY_TCP_PORT
+   Port:        $PUBLIC_TCP_PORT
    SNI:         $REALITY_SNI
    Host:        $REALITY_SNI
    Path:        $XHTTP_PATH
    Fingerprint: firefox
    Public key:  $REALITY_PUBLIC_KEY
    Short ID:    $REALITY_SHORT_ID
+
+ВАЖНО ПО REALITY
+----------------
+SNI/target выбраны автоматически из доступных обычных HTTPS-целей и сохранены локально.
+В обычной диагностике SNI не печатается. Пункт с Host values показывает его только потому, что значение нужно вставить в Remnawave Host.
+Не публикуй этот SNI отдельно на SelfSteal-сайте.
 
 EXTERNAL XRAY_JSON
 ------------------
@@ -294,7 +311,7 @@ SELFSTEAL
 ---------
 Public URL: https://$NODE_DOMAIN/
 Frontend: TCP/$PUBLIC_TCP_PORT nginx SNI mux
-REALITY route: SNI $REALITY_SNI -> 127.0.0.1:$XRAY_TCP_PORT
+Private REALITY route -> 127.0.0.1:$XRAY_TCP_PORT
 Website route: остальные SNI -> 127.0.0.1:$SELFSTEAL_PORT TLS1.2
 SelfSteal не зависит от наличия/назначения Config Profile.
 
@@ -310,11 +327,9 @@ Domain: $NODE_DOMAIN
 Public site: https://$NODE_DOMAIN/
 XHTTP public: $NODE_DOMAIN:$PUBLIC_TCP_PORT/TCP
 XHTTP internal inbound: 127.0.0.1:$XRAY_TCP_PORT
-REALITY SNI: $REALITY_SNI
+REALITY route: PRIVATE (use Host-values menu to reveal)
 XHTTP path: $XHTTP_PATH
 Host Remark: $HOST_REMARK
-Public Key: $REALITY_PUBLIC_KEY
-Short ID: $REALITY_SHORT_ID
 Hysteria2: $ENABLE_HYSTERIA2
 EOF
   chmod 600 "$PROFILE_PUBLIC_FILE"
@@ -323,6 +338,7 @@ EOF
 configure_firewall(){
   command -v ufw >/dev/null 2>&1 || return 0
   ufw allow "$PUBLIC_TCP_PORT"/tcp comment 'SelfSteal + XHTTP frontend' >/dev/null 2>&1 || true
+  ufw --force delete allow "$XRAY_TCP_PORT"/tcp >/dev/null 2>&1 || true
   if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then ufw allow 443/udp comment 'Hysteria2' >/dev/null 2>&1 || true; fi
   ufw reload >/dev/null 2>&1 || true
 }
@@ -342,7 +358,7 @@ main(){
   echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE PROFILE GENERATOR ####################'
   require_root
   resolve_domain
-  resolve_reality_sni
+  resolve_reality_route
   resolve_path
   resolve_hysteria
   find_rw_core
