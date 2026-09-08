@@ -2,8 +2,11 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-BRANCH="${REMNANODE_REPO_REF:-fix/xhttp-raw-hysteria-from-july7}"
-BASE_RAW="https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${BRANCH}"
+MODULE_BRANCH="${REMNANODE_REPO_REF:-fix/xhttp-raw-hysteria-from-july7}"
+LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
+REPO="evgmahov-blip/setup-remna-node"
+MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_BRANCH}"
+LEGACY_RAW="https://raw.githubusercontent.com/${REPO}/${LEGACY_COMMIT}"
 WORK_DIR="${WORK_DIR:-/opt/remnanode/next-installer}"
 APP_DIR="${APP_DIR:-/opt/remnanode}"
 
@@ -38,26 +41,31 @@ status_badge(){
   fi
 }
 
-fetch_module(){
-  local rel="$1" dst="$2"
-  local url="${BASE_RAW}/${rel}"
+fetch_url(){
+  local url="$1" dst="$2" label="$3"
   if curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 45 "$url" -o "$dst"; then
     chmod 0755 "$dst"
     if bash -n "$dst"; then
       return 0
     fi
-    printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $rel"
+    printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $label"
   else
     printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось скачать: $url"
   fi
   return 1
 }
 
+fetch_module(){
+  local rel="$1" dst="$2"
+  fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel"
+}
+
 run_legacy(){
   local f="$WORK_DIR/setup_node-legacy.sh"
-  echo -e "${BLUE}[LEGACY]${NC} Запускаю рабочий установщик от 7 июля без изменения его архитектуры."
-  fetch_module "setup_node.sh" "$f" || return 1
-  REMNANODE_REPO_REF="$BRANCH" bash "$f"
+  echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
+  echo -e "${GRAY}Commit: ${LEGACY_COMMIT}${NC}"
+  fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" || return 1
+  bash "$f"
 }
 
 run_transport(){
@@ -129,6 +137,8 @@ show_status(){
   printf '  '; status_badge 'RKN Watcher' "$rkn"; echo
 
   echo
+  printf '  %-22s %s\n' 'Stable base:' "$LEGACY_COMMIT"
+  printf '  %-22s %s\n' 'Module branch:' "$MODULE_BRANCH"
   printf '  %-22s %s\n' 'Node domain:' "$(cat "$APP_DIR/.node_domain" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Legacy protocol:' "$(cat "$APP_DIR/.protocol" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Transport profile:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
@@ -147,8 +157,8 @@ menu(){
     echo -e "${GREEN}║        REMNANODE NEXT — STABLE JULY CORE + NEW MODULES          ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════════╝${NC}"
     echo
-    echo -e "${BLUE}  [NODE / БАЗА]${NC}"
-    echo -e "   ${WHITE}1)${NC} 🚀 Установка и штатное управление нодой ${GRAY}(рабочая база 07.07)${NC}"
+    echo -e "${GREEN}  [NODE / СТАБИЛЬНАЯ БАЗА]${NC}"
+    echo -e "   ${WHITE}1)${NC} 🚀 Установка и штатное управление нодой ${GRAY}(зафиксированный commit 07.07)${NC}"
     echo -e "   ${WHITE}2)${NC} 📊 Сводный статус ноды / портов / модулей"
     echo
     echo -e "${CYAN}  [TRANSPORT / REMNAWAVE]${NC}"
@@ -162,7 +172,7 @@ menu(){
     echo -e "${YELLOW}  [SECURITY]${NC}"
     echo -e "   ${WHITE}6)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
     echo
-    echo -e "${BLUE}  [ЧТО ОСТАЛОСЬ В СТАРОМ МЕНЮ]${NC}"
+    echo -e "${BLUE}  [СТАРЫЕ ПРОВЕРЕННЫЕ ФУНКЦИИ]${NC}"
     echo -e "      ${GRAY}SelfSteal сайты, SSL, Telemt, Xray version, UFW, IPv6, логи, тесты — пункт 1.${NC}"
     echo
     echo -e "${RED}  [ВЫХОД]${NC}"
