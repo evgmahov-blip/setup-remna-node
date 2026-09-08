@@ -361,7 +361,7 @@ reality_min_client_json(){
 write_xhttp_profile(){
   local f="$PROFILE_DIR/xhttp-reality.json" tmp tmp2 sig="$APP_DIR/xhttp-signature.json"
   resolve_xhttp_path
-  tmp="$(mktemp "$PROFILE_DIR/.xhttp-reality.XXXXXX")"
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-reality.XXXXXX.json")"
   {
     base_profile_prefix
     cat <<JSON
@@ -396,7 +396,7 @@ JSON
     preserve)
       if [[ -s "$sig" ]]; then
         jq -e 'type == "object"' "$sig" >/dev/null 2>&1 || { rm -f "$tmp"; fail "Повреждена сохранённая XHTTP сигнатура: $sig"; return 1; }
-        tmp2="$(mktemp "$PROFILE_DIR/.xhttp-sig.XXXXXX")"
+        tmp2="$(mktemp "$PROFILE_DIR/.xhttp-sig.XXXXXX.json")"
         if jq --slurpfile e "$sig" '.inbounds[0].streamSettings.xhttpSettings.extra = $e[0]' "$tmp" > "$tmp2"; then
           mv -f "$tmp2" "$tmp"
           log "[OK] Сохранённая XHTTP сигнатура перенесена в новый профиль"
@@ -416,7 +416,7 @@ JSON
 
 write_raw_profile(){
   local f="$PROFILE_DIR/raw-reality.json" tmp
-  tmp="$(mktemp "$PROFILE_DIR/.raw-reality.XXXXXX")"
+  tmp="$(mktemp "$PROFILE_DIR/.raw-reality.XXXXXX.json")"
   {
     base_profile_prefix
     cat <<JSON
@@ -532,7 +532,7 @@ write_hysteria_profile(){
   [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || { fail "Для Hysteria2 нужны $CERTS_DIR/fullchain.pem и privkey.pem"; return 1; }
   ensure_hysteria_cert_mount
   masq="$(hysteria_masquerade_json)" || return 1
-  tmp="$(mktemp "$PROFILE_DIR/.hysteria2-tls.XXXXXX")"
+  tmp="$(mktemp "$PROFILE_DIR/.hysteria2-tls.XXXXXX.json")"
   {
     base_profile_prefix
     cat <<JSON

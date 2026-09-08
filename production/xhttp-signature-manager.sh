@@ -122,7 +122,7 @@ ensure_signature(){
 patch_profile(){
   local tmp rc
   [[ -s "$PROFILE_FILE" ]] || { fail "XHTTP profile не найден: $PROFILE_FILE"; return 1; }
-  tmp="$(mktemp "$PROFILE_DIR/.xhttp-signature.XXXXXX")"
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-signature.XXXXXX.json")"
   if ! jq --slurpfile extra "$SIGNATURE_FILE" '.inbounds[0].streamSettings.xhttpSettings.extra = $extra[0]' "$PROFILE_FILE" > "$tmp"; then
     rm -f "$tmp"
     fail 'Не удалось встроить XHTTP extra в профиль'
@@ -160,7 +160,7 @@ HOST
 revert_signature(){
   local tmp rc
   [[ -s "$PROFILE_FILE" ]] || { fail "XHTTP profile не найден: $PROFILE_FILE"; return 1; }
-  tmp="$(mktemp "$PROFILE_DIR/.xhttp-revert.XXXXXX")"
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-revert.XXXXXX.json")"
   jq 'del(.inbounds[0].streamSettings.xhttpSettings.extra)' "$PROFILE_FILE" > "$tmp"
   jq empty "$tmp" >/dev/null
   if runtime_test_profile "$tmp"; then
