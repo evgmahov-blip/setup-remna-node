@@ -22,24 +22,43 @@ jobs:
       - name: Capture STREAM site
         run: |
           set -euo pipefail
-          rm -rf selfsteal/stream
-          mkdir -p selfsteal/stream
+          sources=(
+            'https://rustream.remna.space'
+            'https://est.remna.2rdp.ru'
+            'https://nl.remna.2rdp.ru'
+          )
+          captured=''
 
-          wget \
-            --quiet \
-            --timeout=20 \
-            --tries=3 \
-            --user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36' \
-            --page-requisites \
-            --convert-links \
-            --adjust-extension \
-            --no-host-directories \
-            --directory-prefix=selfsteal/stream \
-            https://rustream.remna.space/ || true
+          for src in "${sources[@]}"; do
+            echo "Trying STREAM source: $src"
+            rm -rf selfsteal/stream
+            mkdir -p selfsteal/stream
 
-          test -s selfsteal/stream/index.html
-          grep -Eqi '<!doctype|<html' selfsteal/stream/index.html
-          find selfsteal/stream -type f -maxdepth 5 -print
+            wget \
+              --timeout=20 \
+              --tries=2 \
+              --user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36' \
+              --page-requisites \
+              --convert-links \
+              --adjust-extension \
+              --no-host-directories \
+              --directory-prefix=selfsteal/stream \
+              "$src/" || true
+
+            idx="$(find selfsteal/stream -type f \( -name 'index.html' -o -name 'index.html.*' \) -print -quit)"
+            if [ -n "$idx" ] && [ -s "$idx" ] && grep -Eqi '<!doctype|<html' "$idx"; then
+              if [ "$idx" != 'selfsteal/stream/index.html' ]; then
+                cp "$idx" selfsteal/stream/index.html
+              fi
+              captured="$src"
+              break
+            fi
+          done
+
+          test -n "$captured"
+          printf '%s\n' "$captured" > selfsteal/stream/SOURCE.txt
+          echo "Captured STREAM from: $captured"
+          find selfsteal/stream -maxdepth 5 -type f -print | sort
 
       - name: Commit captured site
         run: |
