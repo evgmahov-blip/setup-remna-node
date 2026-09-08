@@ -13,6 +13,7 @@ NGINX_MAIN_CONF="$APP_DIR/nginx-main.conf"
 OVERRIDE_FILE="$APP_DIR/docker-compose.override.yml"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
 REALITY_TARGET_FILE="$APP_DIR/.reality_target"
+REALITY_SNI_MODE="${REALITY_SNI_MODE:-keep}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.28}"
 
 log(){ printf '%s\n' "$*"; }
@@ -27,40 +28,114 @@ resolve_domain(){
   [[ -n "$NODE_DOMAIN" ]] || fail "Домен не определен"
 }
 
+is_public_ipv4(){
+  local ip="$1" a b
+  IFS=. read -r a b _ <<< "$ip"
+  [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]] || return 1
+  (( a == 10 || a == 127 || a == 0 )) && return 1
+  (( a == 169 && b == 254 )) && return 1
+  (( a == 192 && b == 168 )) && return 1
+  (( a == 172 && b >= 16 && b <= 31 )) && return 1
+  (( a >= 224 )) && return 1
+  return 0
+}
+
+host_has_public_ip(){
+  local ip found=1
+  while IFS= read -r ip; do
+    [[ -n "$ip" ]] || continue
+    if is_public_ipv4 "$ip"; then found=0; break; fi
+  done < <(getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u)
+  return "$found"
+}
+
 probe_reality_target(){
-  local host="$1"
-  timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -brief </dev/null >/dev/null 2>&1
+  local host="$1" tls tmp
+  [[ "$host" != "$NODE_DOMAIN" ]] || return 1
+  host_has_public_ip "$host" || return 1
+
+  tmp="$(mktemp)"
+  if ! timeout 10 openssl s_client -connect "${host}:443" -servername "$host" -tls1_3 -alpn h2 </dev/null >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # Сертификат target обязан быть валиден именно для выбранного serverName.
+  if ! openssl x509 -in "$tmp" -noout -checkhost "$host" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # Предпочитаем современные HTTPS-цели, которые реально говорят TLS 1.3.
+  tls="$(openssl x509 -in "$tmp" -noout -subject 2>/dev/null || true)"
+  rm -f "$tmp"
+  [[ -n "$tls" ]]
+}
+
+choose_auto_camouflage(){
+  local candidates=(
+    www.microsoft.com
+    www.apple.com
+    www.amazon.com
+    www.cloudflare.com
+    www.samsung.com
+    www.yahoo.com
+    www.bing.com
+  )
+  local start i candidate
+  start=$((16#$(openssl rand -hex 2) % ${#candidates[@]}))
+  for ((i=0; i<${#candidates[@]}; i++)); do
+    candidate="${candidates[$(((start+i)%${#candidates[@]}))]}"
+    if probe_reality_target "$candidate"; then
+      REALITY_SNI="$candidate"
+      REALITY_TARGET="${candidate}:443"
+      return 0
+    fi
+  done
+  return 1
 }
 
 resolve_reality_route(){
   REALITY_SNI="${REALITY_SNI:-}"
   REALITY_TARGET="${REALITY_TARGET:-}"
 
-  [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
-  [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
-
-  if [[ -z "$REALITY_SNI" || -z "$REALITY_TARGET" ]]; then
-    local candidates=(
-      www.microsoft.com
-      www.apple.com
-      www.amazon.com
-      www.samsung.com
-      www.yahoo.com
-      www.bing.com
-    )
-    local start i candidate
-    start=$((16#$(openssl rand -hex 2) % ${#candidates[@]}))
-    for ((i=0; i<${#candidates[@]}; i++)); do
-      candidate="${candidates[$(((start+i)%${#candidates[@]}))]}"
-      if probe_reality_target "$candidate"; then
-        REALITY_SNI="$candidate"
-        REALITY_TARGET="${candidate}:443"
-        break
+  case "$REALITY_SNI_MODE" in
+    rotate)
+      REALITY_SNI=''
+      REALITY_TARGET=''
+      ;;
+    manual)
+      if [[ -z "$REALITY_SNI" ]]; then
+        read -r -p "REALITY camouflage SNI (например www.microsoft.com): " REALITY_SNI
       fi
-    done
+      [[ -n "$REALITY_SNI" ]] || fail "Camouflage SNI пуст"
+      REALITY_TARGET="${REALITY_TARGET:-${REALITY_SNI}:443}"
+      probe_reality_target "$REALITY_SNI" || fail "SNI $REALITY_SNI не прошел проверку: нужен публичный HTTPS target с TLS1.3 и валидным сертификатом"
+      ;;
+    keep|auto)
+      if [[ "$REALITY_SNI_MODE" == keep ]]; then
+        [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
+        [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
+      fi
+      ;;
+    *) fail "REALITY_SNI_MODE должен быть keep/auto/rotate/manual" ;;
+  esac
+
+  if [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]]; then
+    if ! probe_reality_target "$REALITY_SNI"; then
+      warn "Сохраненный camouflage target $REALITY_SNI больше не проходит проверку — выбираю новый"
+      REALITY_SNI=''
+      REALITY_TARGET=''
+    fi
   fi
 
-  [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]] || fail "Не удалось выбрать доступный REALITY target"
+  if [[ -z "$REALITY_SNI" || -z "$REALITY_TARGET" ]]; then
+    choose_auto_camouflage || fail "Не удалось подобрать REALITY camouflage target с TLS1.3 и валидным сертификатом"
+  fi
+
+  [[ "$REALITY_TARGET" == "${REALITY_SNI}:443" ]] || fail "Для этой схемы REALITY target должен совпадать с camouflage SNI: ${REALITY_SNI}:443"
+  [[ "$REALITY_SNI" != "$NODE_DOMAIN" ]] || fail "REALITY SNI не должен совпадать с доменом SelfSteal — nginx не сможет разделить трафик"
+
   printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
   printf '%s\n' "$REALITY_TARGET" > "$REALITY_TARGET_FILE"
   chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE"
@@ -162,11 +237,7 @@ EOF
 }
 
 validate(){
-  (
-    cd "$APP_DIR"
-    docker compose config >/dev/null
-  ) || fail "docker compose config не прошел проверку"
-
+  (cd "$APP_DIR" && docker compose config >/dev/null) || fail "docker compose config не прошел проверку"
   docker run --rm --network host \
     -v "$NGINX_MAIN_CONF:/etc/nginx/nginx.conf:ro" \
     -v "$WEBROOT:/var/www/html:ro" \
@@ -215,7 +286,7 @@ verify(){
   verify_loopback_policy
   log "Public SelfSteal: https://${NODE_DOMAIN}/ -> HTTP ${public_code}"
   log "TCP/${PUBLIC_TCP_PORT}: nginx SNI frontend"
-  log "Private REALITY route: configured (value hidden in normal diagnostics)"
+  log "REALITY camouflage route: configured (SNI скрыт в обычной диагностике)"
   log "Unknown/normal SNI -> SelfSteal TLS1.2"
   log "SelfSteal работает независимо от Config Profile Remnawave."
 }
