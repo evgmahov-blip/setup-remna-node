@@ -66,7 +66,7 @@ refresh_sni_pool(){
       /BUILTIN_DOMAINS[[:space:]]*=/ {inside=1; next}
       inside && /^]/ {exit}
       inside {
-        while (match($0, /[\047\"][A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+[\047\"]/)) {
+        while (match($0, /[\047"][A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+[\047"]/)) {
           s=substr($0,RSTART+1,RLENGTH-2); print s; $0=substr($0,RSTART+RLENGTH)
         }
       }
