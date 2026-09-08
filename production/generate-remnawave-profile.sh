@@ -42,7 +42,9 @@ resolve_reality_route(){
   REALITY_TARGET="${REALITY_TARGET:-}"
   [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
   [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
-  [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]] || fail "Private REALITY route еще не создан. Сначала настрой SelfSteal frontend."
+  [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]] || fail "REALITY camouflage route еще не создан. Сначала настрой SelfSteal frontend."
+  [[ "$REALITY_TARGET" == "${REALITY_SNI}:443" ]] || fail "Неконсистентный REALITY route: target должен быть ${REALITY_SNI}:443"
+  [[ "$REALITY_SNI" != "$NODE_DOMAIN" ]] || fail "REALITY camouflage SNI не должен совпадать с доменом SelfSteal"
 }
 
 gen_path(){ printf '/api/%s/%s.ts\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 8)"; }
@@ -293,11 +295,20 @@ REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
    Public key:  $REALITY_PUBLIC_KEY
    Short ID:    $REALITY_SHORT_ID
 
-ВАЖНО ПО REALITY
-----------------
-SNI/target выбраны автоматически из доступных обычных HTTPS-целей и сохранены локально.
-В обычной диагностике SNI не печатается. Пункт с Host values показывает его только потому, что значение нужно вставить в Remnawave Host.
-Не публикуй этот SNI отдельно на SelfSteal-сайте.
+ВАЖНО ПО REALITY CAMOUFLAGE
+---------------------------
+SNI и target — одна и та же проверенная внешняя HTTPS-цель:
+  SNI:    $REALITY_SNI
+  target: $REALITY_TARGET
+
+Установщик принимает цель только если:
+  - имя резолвится в публичный IPv4;
+  - TLS 1.3 handshake проходит;
+  - сертификат валиден именно для выбранного SNI;
+  - SNI не совпадает с доменом SelfSteal.
+
+Этот SNI — НЕ адрес ноды и НЕ секретный поддомен. Клиент подключается к $NODE_DOMAIN:$PUBLIC_TCP_PORT,
+а camouflage SNI нужен для маршрутизации nginx и REALITY-маскировки.
 
 EXTERNAL XRAY_JSON
 ------------------
@@ -311,7 +322,7 @@ SELFSTEAL
 ---------
 Public URL: https://$NODE_DOMAIN/
 Frontend: TCP/$PUBLIC_TCP_PORT nginx SNI mux
-Private REALITY route -> 127.0.0.1:$XRAY_TCP_PORT
+REALITY camouflage route -> 127.0.0.1:$XRAY_TCP_PORT
 Website route: остальные SNI -> 127.0.0.1:$SELFSTEAL_PORT TLS1.2
 SelfSteal не зависит от наличия/назначения Config Profile.
 
@@ -327,7 +338,7 @@ Domain: $NODE_DOMAIN
 Public site: https://$NODE_DOMAIN/
 XHTTP public: $NODE_DOMAIN:$PUBLIC_TCP_PORT/TCP
 XHTTP internal inbound: 127.0.0.1:$XRAY_TCP_PORT
-REALITY route: PRIVATE (use Host-values menu to reveal)
+REALITY camouflage route: CONFIGURED (use Host-values menu to reveal SNI)
 XHTTP path: $XHTTP_PATH
 Host Remark: $HOST_REMARK
 Hysteria2: $ENABLE_HYSTERIA2
