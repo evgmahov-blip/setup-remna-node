@@ -8,6 +8,8 @@ PROFILE_FILE="${PROFILE_FILE:-$APP_DIR/config-profile.json}"
 PROFILE_PUBLIC_FILE="${PROFILE_PUBLIC_FILE:-$APP_DIR/config-profile-public.txt}"
 REALITY_ENV="${REALITY_ENV:-$APP_DIR/reality.env}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
+XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
+HYSTERIA_STATE_FILE="$APP_DIR/.hysteria2-enabled"
 XHTTP_PORT="${XHTTP_PORT:-443}"
 HYSTERIA_PORT="${HYSTERIA_PORT:-443}"
 SELFSTEAL_PORT="${SELFSTEAL_PORT:-8443}"
@@ -18,54 +20,56 @@ XRAY_KEY_FILE="$XRAY_CERT_DIR/privkey.pem"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
-
-require_root(){
-  [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Запустите от root"
-}
+require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Запустите от root"; }
 
 resolve_domain(){
   NODE_DOMAIN="${NODE_DOMAIN:-}"
-  if [[ -z "$NODE_DOMAIN" && -r "$NODE_DOMAIN_FILE" ]]; then
-    NODE_DOMAIN="$(tr -d '[:space:]' < "$NODE_DOMAIN_FILE")"
-  fi
-  if [[ -z "$NODE_DOMAIN" ]]; then
-    read -r -p "Домен ноды: " NODE_DOMAIN
-  fi
+  [[ -z "$NODE_DOMAIN" && -r "$NODE_DOMAIN_FILE" ]] && NODE_DOMAIN="$(tr -d '[:space:]' < "$NODE_DOMAIN_FILE")"
+  [[ -n "$NODE_DOMAIN" ]] || read -r -p "Домен ноды: " NODE_DOMAIN
   [[ -n "$NODE_DOMAIN" ]] || fail "Домен ноды не определен"
 }
 
 gen_path(){
-  local a b
-  a="$(openssl rand -hex 4)"
-  b="$(openssl rand -hex 8)"
-  printf '/api/%s/%s.ts\n' "$a" "$b"
+  printf '/api/%s/%s.ts\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 8)"
 }
 
 resolve_path(){
   XHTTP_PATH="${XHTTP_PATH:-}"
+  [[ -z "$XHTTP_PATH" && -r "$XHTTP_PATH_FILE" ]] && XHTTP_PATH="$(tr -d '\r\n\t ' < "$XHTTP_PATH_FILE")"
   [[ -n "$XHTTP_PATH" ]] || XHTTP_PATH="$(gen_path)"
   [[ "$XHTTP_PATH" == /* ]] || XHTTP_PATH="/$XHTTP_PATH"
   printf '%s' "$XHTTP_PATH" | grep -Eq '^/[A-Za-z0-9._~/-]+$' || fail "Недопустимый XHTTP path"
+  printf '%s\n' "$XHTTP_PATH" > "$XHTTP_PATH_FILE"
+  chmod 600 "$XHTTP_PATH_FILE"
 }
 
 resolve_hysteria(){
   case "$ENABLE_HYSTERIA2" in
     1|yes|YES|true|TRUE|y|Y) ENABLE_HYSTERIA2=1 ;;
     0|no|NO|false|FALSE|n|N) ENABLE_HYSTERIA2=0 ;;
+    keep)
+      if [[ -r "$HYSTERIA_STATE_FILE" ]]; then
+        ENABLE_HYSTERIA2="$(tr -d '[:space:]' < "$HYSTERIA_STATE_FILE")"
+      else
+        ENABLE_HYSTERIA2=0
+      fi
+      ;;
     ask)
       local answer
       printf '\nHysteria2 использует QUIC/UDP и TLS 1.3. В некоторых сетях РФ этот транспорт может фильтроваться.\n'
       read -r -p "Добавить Hysteria2 как дополнительный транспорт на UDP/443? [y/N]: " answer
       case "${answer:-N}" in [Yy]*) ENABLE_HYSTERIA2=1 ;; *) ENABLE_HYSTERIA2=0 ;; esac
       ;;
-    *) fail "ENABLE_HYSTERIA2 должен быть 0/1/ask" ;;
+    *) fail "ENABLE_HYSTERIA2 должен быть 0/1/ask/keep" ;;
   esac
+  printf '%s\n' "$ENABLE_HYSTERIA2" > "$HYSTERIA_STATE_FILE"
+  chmod 600 "$HYSTERIA_STATE_FILE"
 }
 
 find_rw_core(){
   RW_CORE="$(command -v rw-core 2>/dev/null || true)"
   [[ -x "$RW_CORE" ]] && return 0
-  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'remnanode'; then
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
     RW_CORE="docker:remnanode"
     return 0
   fi
@@ -76,7 +80,9 @@ generate_reality_material(){
   if [[ -s "$REALITY_ENV" ]]; then
     # shellcheck disable=SC1090
     . "$REALITY_ENV"
-    [[ -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]] && return 0
+    if [[ -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]]; then
+      return 0
+    fi
   fi
 
   local raw private public short
@@ -100,7 +106,6 @@ REALITY_SERVER_NAME=$NODE_DOMAIN
 REALITY_TARGET=127.0.0.1:$SELFSTEAL_PORT
 EOF
   chmod 600 "$REALITY_ENV"
-
   REALITY_PRIVATE_KEY="$private"
   REALITY_PUBLIC_KEY="$public"
   REALITY_SHORT_ID="$short"
@@ -118,37 +123,17 @@ check_certs_for_hysteria(){
 ensure_cert_mount(){
   [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
   [[ -f "$APP_DIR/docker-compose.yml" ]] || fail "Не найден $APP_DIR/docker-compose.yml"
-
-  local override="$APP_DIR/docker-compose.override.yml"
-  if [[ -f "$override" ]]; then
-    cp -a "$override" "$override.bak.$(date +%Y%m%d-%H%M%S)"
-  fi
-
-  cat > "$override" <<EOF
-services:
-  remnanode:
-    volumes:
-      - $CERTS_DIR:$XRAY_CERT_DIR:ro
-EOF
-
   (
     cd "$APP_DIR"
-    docker compose config >/dev/null
-  ) || fail "docker-compose.override.yml с сертификатами не прошел docker compose config"
-
-  log "Сертификаты Hysteria2 проброшены: $CERTS_DIR -> $XRAY_CERT_DIR:ro"
+    docker compose config | grep -q '/etc/xray/certs'
+  ) || fail "В итоговом docker compose отсутствует mount сертификатов в /etc/xray/certs"
+  log "Cert mount присутствует в итоговом docker compose"
 }
 
 verify_cert_mount(){
   [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
   command -v docker >/dev/null 2>&1 || fail "Docker не найден"
-
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
-    (
-      cd "$APP_DIR"
-      docker compose up -d remnanode >/dev/null
-    ) || fail "Не удалось пересоздать remnanode с cert mount"
-
     docker exec remnanode test -s "$XRAY_CERT_FILE" || fail "В контейнере нет $XRAY_CERT_FILE"
     docker exec remnanode test -s "$XRAY_KEY_FILE" || fail "В контейнере нет $XRAY_KEY_FILE"
     log "Проверка cert mount в контейнере: OK"
@@ -165,10 +150,7 @@ write_profile(){
       "listen": "0.0.0.0",
       "port": $HYSTERIA_PORT,
       "protocol": "hysteria",
-      "settings": {
-        "version": 2,
-        "users": []
-      },
+      "settings": {"version": 2, "users": []},
       "streamSettings": {
         "method": "hysteria",
         "security": "tls",
@@ -287,11 +269,7 @@ EOF
         ],
         "outboundTag": "BLOCK"
       },
-      {
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "BLOCK"
-      }
+      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "BLOCK"}
     ]
   }
 }
