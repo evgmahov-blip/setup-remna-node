@@ -94,16 +94,21 @@ apply(){
 }
 
 verify(){
-  local attempt
+  local attempt code
   for attempt in $(seq 1 20); do
     if ss -lntH 2>/dev/null | grep -q "127.0.0.1:${SELFSTEAL_PORT}"; then
-      log "SelfSteal backend: 127.0.0.1:${SELFSTEAL_PORT} TLS1.2"
-      log "Hysteria2 cert mount: $CERTS_DIR -> /etc/xray/certs:ro"
-      return 0
+      code="$(curl -ksS --tls-max 1.2 --resolve "$NODE_DOMAIN:${SELFSTEAL_PORT}:127.0.0.1" \
+        -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 \
+        "https://${NODE_DOMAIN}:${SELFSTEAL_PORT}/" 2>/dev/null || true)"
+      if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
+        log "SelfSteal backend: 127.0.0.1:${SELFSTEAL_PORT} TLS1.2, HTTP $code"
+        log "Hysteria2 cert mount: $CERTS_DIR -> /etc/xray/certs:ro"
+        return 0
+      fi
     fi
     sleep 1
   done
-  fail "Nginx не начал слушать 127.0.0.1:${SELFSTEAL_PORT}"
+  fail "SelfSteal backend слушает порт, но не отдает нормальный HTTPS/HTTP-ответ"
 }
 
 main(){
