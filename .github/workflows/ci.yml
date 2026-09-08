@@ -1,0 +1,26 @@
+name: installer-ci
+
+on:
+  push:
+    branches:
+      - feature/transport443-mux
+  pull_request:
+    branches:
+      - custom
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: |
+          bash -n setup_node.sh
+          for f in production/*.sh legacy/*.sh; do
+            bash -n "$f"
+          done
+      - name: ShellCheck production code
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck -x -S warning setup_node.sh production/*.sh
