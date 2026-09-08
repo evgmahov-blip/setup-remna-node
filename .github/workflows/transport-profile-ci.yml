@@ -16,6 +16,7 @@ jobs:
         run: |
           bash -n setup_node.sh
           bash -n production/remnawave-transport-manager.sh
+          bash -n production/rkn-watcher-manager.sh
 
       - name: Generate XHTTP and RAW profiles
         run: |
