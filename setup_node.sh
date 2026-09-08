@@ -63,6 +63,7 @@ bundle_file(){
 
 ensure_bundle(){
   install -d -m 0700 "$INSTALLER_DIR" "$PRODUCTION_DIR" "$LEGACY_DIR"
+  bundle_file production/reset-node.sh "$PRODUCTION_DIR/reset-node.sh"
   bundle_file production/setup-base-node.sh "$PRODUCTION_DIR/setup-base-node.sh"
   bundle_file production/install-production.sh "$PRODUCTION_DIR/install-production.sh"
   bundle_file production/install-stream-site.sh "$PRODUCTION_DIR/install-stream-site.sh"
@@ -84,10 +85,29 @@ run_full_install(){
   clear
   echo '#################### НАЧАЛО ВЫВОДА: FULL PRODUCTION INSTALL ####################'
   ensure_bundle
+
+  # На чистой ноде reset ничего не делает. Если обнаружены старые Remna/Xray/Telemt/Caddy
+  # артефакты, скрипт покажет их и предложит очистить перед новой установкой.
+  RESET_MODE=auto bash "$PRODUCTION_DIR/reset-node.sh"
+
+  # reset может удалить /opt/remnanode вместе с временно скачанным bundle.
+  # Поэтому загружаем production bundle еще раз после очистки.
+  ensure_bundle
   bash "$PRODUCTION_DIR/setup-base-node.sh"
   bash "$PRODUCTION_DIR/install-production.sh"
   register_globally || true
   echo '#################### КОНЕЦ ВЫВОДА: FULL PRODUCTION INSTALL ####################'
+  pause_prompt
+}
+
+run_zero_reset(){
+  clear
+  echo '#################### НАЧАЛО ВЫВОДА: MANUAL ZERO RESET ####################'
+  ensure_bundle
+  printf '%bВНИМАНИЕ:%b будут удалены только распознанные компоненты старого Remna/Xray/Telemt/proxy-стека.\n' "$Y" "$N"
+  printf 'SSH, Docker как платформа и посторонние контейнеры не удаляются. UFW целиком не сбрасывается.\n\n'
+  RESET_MODE=force bash "$PRODUCTION_DIR/reset-node.sh"
+  echo '#################### КОНЕЦ ВЫВОДА: MANUAL ZERO RESET ####################'
   pause_prompt
 }
 
@@ -140,9 +160,7 @@ run_selfsteal_manager(){
       SELFSTEAL_SITE=radio bash "$PRODUCTION_DIR/install-stream-site.sh"
       bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
       ;;
-    3)
-      show_radio_admin
-      ;;
+    3) show_radio_admin ;;
     0) return ;;
     *) warn "Неизвестный пункт" ;;
   esac
@@ -211,6 +229,7 @@ main_menu(){
     printf '  3) SelfSteal: STREAM / RADIO\n'
     printf '  4) Статус и диагностика\n'
     printf '  5) Legacy-инструменты (Telemt и старые сервисные функции)\n'
+    printf '  9) Полная очистка старого Remna/Proxy-стека до нуля\n'
     printf '  0) Выход\n\n'
     printf 'Выбор [0]: '
     local choice; read -r choice; choice=${choice:-0}
@@ -220,6 +239,7 @@ main_menu(){
       3) run_selfsteal_manager ;;
       4) show_status ;;
       5) run_legacy_tools ;;
+      9) run_zero_reset ;;
       0) return 0 ;;
       *) warn "Неизвестный пункт"; sleep 1 ;;
     esac
