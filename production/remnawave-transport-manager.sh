@@ -601,6 +601,20 @@ JSON
   atomic_profile_install "$tmp" "$f"
 }
 
+write_combined_profile(){
+  local x="$PROFILE_DIR/xhttp-reality.json" h="$PROFILE_DIR/hysteria2-tls.json"
+  local f="$PROFILE_DIR/xhttp-hysteria2.json" tmp
+  [[ -s "$x" ]] || { fail "Не найден XHTTP профиль: $x"; return 1; }
+  [[ -s "$h" ]] || { fail "Не найден Hysteria2 профиль: $h"; return 1; }
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-hysteria2.XXXXXX.json")"
+  if ! jq --slurpfile h "$h" '.inbounds += $h[0].inbounds' "$x" > "$tmp"; then
+    rm -f "$tmp"
+    fail "Не удалось объединить XHTTP и Hysteria2"
+    return 1
+  fi
+  atomic_profile_install "$tmp" "$f"
+}
+
 write_host_values(){
   local transport="$1" d minver inbound
   d="$(node_domain)"
@@ -620,8 +634,7 @@ Host: пусто
 Path: $XHTTP_PATH
 Mode: auto
 Flow: пусто
-Public key: $REALITY_PUBLIC_KEY
-Short ID: $REALITY_SHORT_ID
+Reality keys: берутся из Inbound при Security Layer DEFAULT; вручную в Host не вводятся
 Camouflage: $CAMOUFLAGE_MODE
 Reality target: $REALITY_TARGET
 Min client ver: $minver
@@ -639,8 +652,7 @@ Fingerprint: firefox
 Host: пусто
 Path: пусто
 Flow: пусто (осознанно: совместимость; xtls-rprx-vision не включён)
-Public key: $REALITY_PUBLIC_KEY
-Short ID: $REALITY_SHORT_ID
+Reality keys: берутся из Inbound при Security Layer DEFAULT; вручную в Host не вводятся
 Camouflage: $CAMOUFLAGE_MODE
 Reality target: $REALITY_TARGET
 Min client ver: $minver
@@ -651,9 +663,11 @@ HOST
 Remark: $inbound
 Inbound: $inbound
 Address: $d
-Port: $PUBLIC_PORT/UDP
+Port: $PUBLIC_PORT
+Transport: Hysteria2 / UDP
 Security Layer: DEFAULT
 SNI: $d
+Take SNI from address: ON
 ALPN: h3
 Masquerade: встроенная копия текущего SelfSteal index.html
 HOST
@@ -681,33 +695,51 @@ generate_transport(){
       write_hysteria_profile
       write_host_values hysteria
       ;;
-    *) fail "Допустимо: xhttp | raw | hysteria"; return 1 ;;
+    combined)
+      select_camouflage
+      generate_reality_keys
+      write_xhttp_profile
+      write_host_values xhttp
+      write_hysteria_profile
+      write_host_values hysteria
+      write_combined_profile
+      ;;
+    *) fail "Допустимо: xhttp | raw | hysteria | combined"; return 1 ;;
   esac
   printf '%s\n' "$transport" > "$TRANSPORT_FILE"
   chmod 600 "$TRANSPORT_FILE"
 }
 
 show_result(){
-  local transport="$1" profile host
+  local transport="$1" profile host host2=""
   case "$transport" in
     xhttp) profile="$PROFILE_DIR/xhttp-reality.json"; host="$PROFILE_DIR/host-xhttp.txt" ;;
     raw) profile="$PROFILE_DIR/raw-reality.json"; host="$PROFILE_DIR/host-raw.txt" ;;
     hysteria) profile="$PROFILE_DIR/hysteria2-tls.json"; host="$PROFILE_DIR/host-hysteria2.txt" ;;
+    combined) profile="$PROFILE_DIR/xhttp-hysteria2.json"; host="$PROFILE_DIR/host-xhttp.txt"; host2="$PROFILE_DIR/host-hysteria2.txt" ;;
   esac
   echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE TRANSPORT PROFILE ####################'
   echo "Transport: $transport"
   echo "Profile:   $profile"
   echo "Host:      $host"
+  [[ -n "$host2" ]] && echo "Host 2:    $host2"
   echo
   if [[ "${SHOW_PRIVATE_PROFILE:-0}" == "1" ]]; then
     cat "$profile"
   else
     jq '(.inbounds[]?.streamSettings.realitySettings.privateKey? // empty) = "<REDACTED_PRIVATE_KEY>"' "$profile" 2>/dev/null || cat "$profile"
     echo
-    echo '[INFO] privateKey скрыт в выводе. Полный профиль находится в файле выше.'
+    echo '[INFO] privateKey скрыт в выводе.'
+    echo "[INFO] Полный профиль для копипаста: cat $profile"
   fi
   echo
+  echo '[HOST]'
   cat "$host"
+  if [[ -n "$host2" ]]; then
+    echo
+    echo '[HOST 2]'
+    cat "$host2"
+  fi
   echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE TRANSPORT PROFILE ####################'
 }
 
@@ -716,11 +748,12 @@ main(){
   local transport="${1:-}" c
   if [[ -z "$transport" ]]; then
     echo 'Выбери транспорт:'
-    echo '  1) VLESS + REALITY + XHTTP'
-    echo '  2) VLESS + REALITY + RAW'
-    echo '  3) Hysteria2 + TLS'
+    echo '  1) VLESS + REALITY + XHTTP (основной)'
+    echo '  2) VLESS + REALITY + RAW (fallback)'
+    echo '  3) Hysteria2 + TLS (UDP)'
+    echo '  4) XHTTP + Hysteria2 одновременно (TCP/443 + UDP/443)'
     read -r -p 'Выбор [1]: ' c
-    case "${c:-1}" in 1) transport=xhttp ;; 2) transport=raw ;; 3) transport=hysteria ;; *) fail "Неверный выбор"; return 1 ;; esac
+    case "${c:-1}" in 1) transport=xhttp ;; 2) transport=raw ;; 3) transport=hysteria ;; 4) transport=combined ;; *) fail "Неверный выбор"; return 1 ;; esac
   fi
   generate_transport "$transport"
   show_result "$transport"
