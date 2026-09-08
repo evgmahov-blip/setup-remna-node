@@ -113,15 +113,13 @@ show_profile_state(){
     printf '  Локальный JSON:   НЕ СОЗДАН\n'
   fi
   printf '  XHTTP path:       %s\n' "$(cat "$APP_DIR/.xhttp_path" 2>/dev/null || echo 'еще не создан')"
-  printf '  REALITY SNI:      %s\n' "$(reality_sni)"
+  if [[ -s "$APP_DIR/.reality_sni" ]]; then printf '  REALITY route:    PRIVATE (показывается только в Host values)\n'; else printf '  REALITY route:    еще не создан\n'; fi
   if [[ "$(hysteria_state)" == 1 ]]; then printf '  Hysteria2:        ВКЛЮЧЕНА\n'; else printf '  Hysteria2:        выключена\n'; fi
 }
 
 run_profile_generator(){
   local mode="$1"
   ensure_bundle
-  # Сначала гарантируем независимый публичный сайт на TCP/443.
-  # Xray после этого должен слушать внутренний 127.0.0.1:10443 из сгенерированного профиля.
   bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
   ENABLE_HYSTERIA2="$mode" bash "$PRODUCTION_DIR/generate-remnawave-profile.sh"
 }
@@ -137,14 +135,15 @@ run_profile_manager(){
   printf '  - JSON из пункта 1/2 копируешь целиком в Management -> Config Profiles;\n'
   printf '  - после этого назначаешь профиль ноде;\n'
   printf '  - затем создаешь Host по готовым значениям из пункта 3;\n'
-  printf '  - External XRAY_JSON не заменяется: для него генерируется отдельный injectHosts-фрагмент.\n\n'
+  printf '  - External XRAY_JSON не заменяется: для него генерируется отдельный injectHosts-фрагмент.\n'
+  printf '  - private REALITY SNI/target не печатаются в обычной диагностике.\n\n'
 
   printf '  1) СГЕНЕРИРОВАТЬ И СРАЗУ ВЫВЕСТИ JSON ДЛЯ COPY-PASTE (Hysteria2 оставить как сейчас)\n'
   printf '  2) СГЕНЕРИРОВАТЬ И ВЫВЕСТИ JSON + заново выбрать Hysteria2\n'
-  printf '  3) Показать точные значения Host для Remnawave\n'
+  printf '  3) Показать точные значения Host для Remnawave (включая private REALITY SNI)\n'
   printf '  4) Повторно вывести полный Config Profile JSON\n'
   printf '  5) Показать injectHosts-фрагмент для существующего External XRAY_JSON\n'
-  printf '  6) Проверить сайт и REALITY-маршрут\n'
+  printf '  6) Проверить сайт и private REALITY-маршрут\n'
   printf '  0) Назад\n\nВыбор [0]: '
   local choice; read -r choice; choice=${choice:-0}
   case "$choice" in
@@ -214,11 +213,11 @@ run_selfsteal_test(){
   fi
 
   if [[ -n "$sni" ]]; then
-    reality_code="$(curl -ksS --tls-max 1.2 --resolve "$sni:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$sni/" 2>/dev/null || true)"
+    reality_code="$(curl -ksS --resolve "$sni:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$sni/" 2>/dev/null || true)"
     if [[ "$reality_code" =~ ^[23][0-9][0-9]$ ]]; then
-      ok "REALITY SNI route $sni -> Xray -> fallback HTTP $reality_code"
+      ok "private REALITY route -> Xray/fallback отвечает HTTP $reality_code"
     else
-      warn "REALITY SNI route пока не подтвержден (${reality_code:-000}). После назначения нового профиля rw-core должен слушать 127.0.0.1:10443."
+      warn "private REALITY route пока не подтвержден (${reality_code:-000}). После назначения нового профиля rw-core должен слушать 127.0.0.1:10443."
     fi
   fi
   echo '#################### КОНЕЦ ВЫВОДА: SELFSTEAL TEST ####################'
@@ -229,6 +228,7 @@ show_status(){
   echo '#################### НАЧАЛО ВЫВОДА: NODE STATUS ####################'
   printf 'Domain: %s\n' "$(node_domain)"
   printf 'Local Config Profile: '; if profile_exists; then echo 'CREATED (назначение в панели отдельно)'; else echo 'NOT CREATED'; fi
+  printf 'REALITY route: '; if [[ -s "$APP_DIR/.reality_sni" ]]; then echo 'PRIVATE / CONFIGURED'; else echo 'NOT CREATED'; fi
   printf 'Hysteria2: '; if [[ "$(hysteria_state)" == 1 ]]; then echo 'ENABLED'; else echo 'DISABLED'; fi
   printf '\nContainers:\n'; docker ps --filter name=remnanode --filter name=remnawave-nginx --format '  {{.Names}}\t{{.Status}}' 2>/dev/null || true
   printf '\nListeners:\n'; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:10443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
