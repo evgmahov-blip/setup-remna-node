@@ -1,0 +1,74 @@
+name: inbound-name-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+      - custom
+    paths:
+      - production/remnawave-transport-manager.sh
+      - production/modules.sha256
+      - setup_node_next.sh
+      - .github/workflows/inbound-name-ci.yml
+  pull_request:
+    branches:
+      - custom
+    paths:
+      - production/remnawave-transport-manager.sh
+      - production/modules.sha256
+      - setup_node_next.sh
+      - .github/workflows/inbound-name-ci.yml
+
+jobs:
+  validate-names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate profiles with FIN-node2 naming
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          FAKEBIN="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs" "$FAKEBIN"
+          printf 'fin2.example.com\n' > "$T/.node_domain"
+          printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
+          printf 'dummy-key\n' > "$T/certs/privkey.pem"
+          printf 'server { listen unix:/dev/shm/nginx.sock ssl proxy_protocol; }\n' > "$T/nginx.conf"
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/nginx.conf"
+
+          cat > "$FAKEBIN/xray" <<'XRAY'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" == "x25519" ]]; then
+            echo 'Private key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            echo 'Public key: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+            exit 0
+          fi
+          if [[ "${1:-}" == "run" && "${2:-}" == "-test" ]]; then
+            exit 0
+          fi
+          echo "unexpected fake xray args: $*" >&2
+          exit 2
+          XRAY
+          chmod 755 "$FAKEBIN/xray"
+
+          sudo env PATH="$FAKEBIN:$PATH" APP_DIR="$T" NODE_NAME=FIN-node2 CAMOUFLAGE_MODE=selfsteal XHTTP_SIGNATURE_MODE=none \
+            bash production/remnawave-transport-manager.sh xhttp >/tmp/name-xhttp.out
+          sudo jq -e '.inbounds[0].tag == "FIN-node2-xHTTP"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo grep -Fxq 'Remark: FIN-node2-xHTTP' "$T/remnawave-profiles/host-xhttp.txt"
+          sudo grep -Fxq 'Inbound: FIN-node2-xHTTP' "$T/remnawave-profiles/host-xhttp.txt"
+          test "$(sudo cat "$T/.node_name")" = 'FIN-node2'
+
+          sudo env PATH="$FAKEBIN:$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal \
+            bash production/remnawave-transport-manager.sh raw >/tmp/name-raw.out
+          sudo jq -e '.inbounds[0].tag == "FIN-node2-RAW"' "$T/remnawave-profiles/raw-reality.json"
+          sudo grep -Fxq 'Remark: FIN-node2-RAW' "$T/remnawave-profiles/host-raw.txt"
+          sudo grep -Fxq 'Inbound: FIN-node2-RAW' "$T/remnawave-profiles/host-raw.txt"
+
+          sudo env PATH="$FAKEBIN:$PATH" APP_DIR="$T" WWW_DIR="$T/www" \
+            bash production/remnawave-transport-manager.sh hysteria >/tmp/name-hysteria.out
+          sudo jq -e '.inbounds[0].tag == "FIN-node2-Hysteria2"' "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo grep -Fxq 'Remark: FIN-node2-Hysteria2' "$T/remnawave-profiles/host-hysteria2.txt"
+          sudo grep -Fxq 'Inbound: FIN-node2-Hysteria2' "$T/remnawave-profiles/host-hysteria2.txt"
