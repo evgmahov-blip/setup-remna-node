@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - fix/xhttp-raw-hysteria-from-july7
+      - custom
   pull_request:
+    branches:
+      - custom
 
 jobs:
   validate:
@@ -14,12 +17,38 @@ jobs:
 
       - name: Bash syntax
         run: |
+          set -euo pipefail
           bash -n setup_node.sh
           bash -n setup_node_next.sh
           bash -n production/remnawave-transport-manager.sh
           bash -n production/xhttp-signature-manager.sh
           bash -n production/rkn-watcher-manager.sh
           bash -n production/validate-generated-profile.sh
+
+      - name: Module manifest and immutable pin
+        run: |
+          set -euo pipefail
+          sha256sum -c production/modules.sha256
+          python3 - <<'PY'
+          import pathlib, re, sys
+          wrapper = pathlib.Path('setup_node_next.sh').read_text()
+          manifest = pathlib.Path('production/modules.sha256').read_text().splitlines()
+          m = re.search(r'^MODULE_REF="\$\{REMNANODE_REPO_REF:-([0-9a-f]{40})\}"$', wrapper, re.M)
+          if not m:
+              raise SystemExit('MODULE_REF is not an immutable 40-char SHA')
+          for line in manifest:
+              want, path = line.split(None, 1)
+              pat = re.escape(f'[{path}]') + r'="([0-9a-f]{64})"'
+              hit = re.search(pat, wrapper)
+              if not hit or hit.group(1) != want:
+                  raise SystemExit(f'wrapper checksum mismatch for {path}')
+          print('MODULE_REF', m.group(1))
+          PY
+          MODULE_REF="$(sed -nE 's/^MODULE_REF="\$\{REMNANODE_REPO_REF:-([0-9a-f]{40})\}"/\1/p' setup_node_next.sh)"
+          while read -r want path; do
+            curl -fsSL --proto '=https' "https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${MODULE_REF}/${path}" -o /tmp/module-check
+            echo "$want  /tmp/module-check" | sha256sum -c -
+          done < production/modules.sha256
 
       - name: Install pinned Xray v26.7.28
         run: |
@@ -34,29 +63,45 @@ jobs:
           sudo install -m 0644 /tmp/xray-bin/geosite.dat /usr/local/bin/geosite.dat
           xray version
 
-      - name: Generate and validate XHTTP external-SNI profile
+      - name: XHTTP external SNI default mode and signature round-trip
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/certs"
           chmod 755 "$T" "$T/certs"
           printf 'node.example.com\n' > "$T/.node_domain"
-          printf 'www.microsoft.com\n' > "$T/.reality_sni"
-          printf 'www.microsoft.com:443\n' > "$T/.reality_target"
+          printf 'www.cloudflare.com\n' > "$T/.reality_sni"
+          printf 'www.cloudflare.com:443\n' > "$T/.reality_target"
           chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
 
-          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
-          sudo env APP_DIR="$T" bash production/xhttp-signature-manager.sh >/tmp/xhttp-signature.out
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep XHTTP_SIGNATURE_MODE=none \
+            bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
 
-          sudo jq empty "$T/remnawave-profiles/xhttp-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443"' "$T/remnawave-profiles/xhttp-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra.sessionIDTable == "Base62"' "$T/remnawave-profiles/xhttp-reality.json"
-          sudo jq -e --slurpfile e "$T/remnawave-profiles/host-xhttp-extra.json" '.inbounds[0].streamSettings.xhttpSettings.extra == $e[0]' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.mode == "auto"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '(.inbounds[0].streamSettings.xhttpSettings.extra? // null) == null' "$T/remnawave-profiles/xhttp-reality.json"
           sudo xray run -test -c "$T/remnawave-profiles/xhttp-reality.json"
 
-      - name: Generate and validate RAW SelfSteal profile
+          sudo env APP_DIR="$T" bash production/xhttp-signature-manager.sh apply >/tmp/xhttp-signature.out
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra.sessionIDTable == "Base62"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra | has("sessionKey") | not' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra | has("sessionPlacement") | not' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra.xmux | has("cMaxLifetimeMs") | not' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e --slurpfile e "$T/remnawave-profiles/host-xhttp-extra.json" \
+            '.inbounds[0].streamSettings.xhttpSettings.extra == $e[0]' \
+            "$T/remnawave-profiles/xhttp-reality.json"
+
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep XHTTP_SIGNATURE_MODE=preserve \
+            bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp-repeat.out
+          sudo jq -e --slurpfile e "$T/remnawave-profiles/host-xhttp-extra.json" \
+            '.inbounds[0].streamSettings.xhttpSettings.extra == $e[0]' \
+            "$T/remnawave-profiles/xhttp-reality.json"
+
+          sudo env APP_DIR="$T" bash production/xhttp-signature-manager.sh revert >/tmp/xhttp-revert.out
+          sudo jq -e '(.inbounds[0].streamSettings.xhttpSettings.extra? // null) == null' "$T/remnawave-profiles/xhttp-reality.json"
+          test ! -e "$T/remnawave-profiles/host-xhttp-extra.json"
+
+      - name: XHTTP SelfSteal profile
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -65,17 +110,131 @@ jobs:
           printf 'node.example.com\n' > "$T/.node_domain"
           printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
           printf 'dummy-key\n' > "$T/certs/privkey.pem"
-          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem"
+          cat > "$T/nginx.conf" <<'NGINX'
+          server {
+              listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+          }
+          NGINX
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/nginx.conf"
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal XHTTP_SIGNATURE_MODE=none \
+            bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp-selfsteal.out
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.xver == 1' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo xray run -test -c "$T/remnawave-profiles/xhttp-reality.json"
 
-          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
-          sudo jq empty "$T/remnawave-profiles/raw-reality.json"
+      - name: SelfSteal guard rejects non TLS unix socket nginx
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'xhttp\n' > "$T/.protocol"
+          printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
+          printf 'dummy-key\n' > "$T/certs/privkey.pem"
+          printf 'server { listen unix:/dev/shm/nginx.sock proxy_protocol; }\n' > "$T/nginx.conf"
+          if sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal \
+            bash production/remnawave-transport-manager.sh raw >/tmp/selfsteal-negative.out 2>&1; then
+            cat /tmp/selfsteal-negative.out
+            echo 'SelfSteal guard unexpectedly allowed non-TLS nginx socket'
+            exit 1
+          fi
+          grep -q 'SelfSteal REALITY несовместим' /tmp/selfsteal-negative.out
+          test ! -e "$T/remnawave-profiles/raw-reality.json"
+
+      - name: RAW SelfSteal profile
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
+          printf 'dummy-key\n' > "$T/certs/privkey.pem"
+          printf 'server { listen unix:/dev/shm/nginx.sock ssl proxy_protocol; }\n' > "$T/nginx.conf"
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal \
+            bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
           sudo jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$T/remnawave-profiles/raw-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.realitySettings.xver == 1' "$T/remnawave-profiles/raw-reality.json"
-          sudo jq -e '.inbounds[0].streamSettings.realitySettings.serverNames == ["node.example.com"]' "$T/remnawave-profiles/raw-reality.json"
-          sudo grep -q '^Flow: пусто$' "$T/remnawave-profiles/host-raw.txt"
+          sudo grep -q '^Flow: пусто (осознанно:' "$T/remnawave-profiles/host-raw.txt"
           sudo xray run -test -c "$T/remnawave-profiles/raw-reality.json"
+
+      - name: RAW external SNI profile
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'www.cloudflare.com\n' > "$T/.reality_sni"
+          printf 'www.cloudflare.com:443\n' > "$T/.reality_target"
+          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep \
+            bash production/remnawave-transport-manager.sh raw >/tmp/raw-external.out
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "www.cloudflare.com:443"' "$T/remnawave-profiles/raw-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.realitySettings.xver == 0' "$T/remnawave-profiles/raw-reality.json"
+          sudo xray run -test -c "$T/remnawave-profiles/raw-reality.json"
+
+      - name: Refresh pinned SNI pool on Ubuntu mawk
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'www.cloudflare.com\n' > "$T/.reality_sni"
+          printf 'www.cloudflare.com:443\n' > "$T/.reality_target"
+          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=refresh XHTTP_SIGNATURE_MODE=none \
+            bash production/remnawave-transport-manager.sh xhttp >/tmp/sni-refresh.out
+          count="$(sudo wc -l < "$T/reality-targets.cache")"
+          test "$count" -ge 50
+          ! grep -q 'встроенный резервный SNI pool' /tmp/sni-refresh.out
+
+      - name: Runtime validation preserves old profile on bad REALITY short id
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          chmod 755 "$T" "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'www.cloudflare.com\n' > "$T/.reality_sni"
+          printf 'www.cloudflare.com:443\n' > "$T/.reality_target"
+          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep \
+            bash production/remnawave-transport-manager.sh raw >/tmp/raw-good.out
+          before="$(sudo sha256sum "$T/remnawave-profiles/raw-reality.json" | cut -d' ' -f1)"
+          sudo sed -i 's/^REALITY_SHORT_ID=.*/REALITY_SHORT_ID=zzzz/' "$T/reality.env"
+          if sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep \
+            bash production/remnawave-transport-manager.sh raw >/tmp/raw-bad.out 2>&1; then
+            cat /tmp/raw-bad.out
+            echo 'Invalid short id unexpectedly passed runtime validation'
+            exit 1
+          fi
+          after="$(sudo sha256sum "$T/remnawave-profiles/raw-reality.json" | cut -d' ' -f1)"
+          test "$before" = "$after"
+          grep -q 'НЕ обновлён' /tmp/raw-bad.out
+
+      - name: Hysteria2 fails safely without runtime cert mount
+        run: |
+          set -euo pipefail
+          sudo rm -rf /etc/xray/certs
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs" "$T/www"
+          chmod 755 "$T" "$T/certs" "$T/www"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf '<html><body>selfsteal</body></html>\n' > "$T/www/index.html"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=node.example.com' \
+            -keyout "$T/certs/privkey.pem" -out "$T/certs/fullchain.pem" >/dev/null 2>&1
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/www/index.html"
+          if sudo env PATH="$PATH" APP_DIR="$T" WWW_DIR="$T/www" \
+            bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria-negative.out 2>&1; then
+            cat /tmp/hysteria-negative.out
+            echo 'Hysteria unexpectedly passed without /etc/xray/certs'
+            exit 1
+          fi
+          test ! -e "$T/remnawave-profiles/hysteria2-tls.json"
+          grep -q 'НЕ обновлён' /tmp/hysteria-negative.out
 
       - name: Generate and validate Hysteria2 profile
         run: |
@@ -85,17 +244,29 @@ jobs:
           chmod 755 "$T" "$T/certs" "$T/www"
           printf 'node.example.com\n' > "$T/.node_domain"
           printf '<html><body>selfsteal</body></html>\n' > "$T/www/index.html"
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -subj '/CN=node.example.com' \
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=node.example.com' \
             -keyout "$T/certs/privkey.pem" -out "$T/certs/fullchain.pem" >/dev/null 2>&1
           sudo mkdir -p /etc/xray/certs
           sudo cp "$T/certs/fullchain.pem" /etc/xray/certs/fullchain.pem
           sudo cp "$T/certs/privkey.pem" /etc/xray/certs/privkey.pem
           chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/www/index.html"
 
-          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
-          sudo jq empty "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo env PATH="$PATH" APP_DIR="$T" WWW_DIR="$T/www" \
+            bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
           sudo jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo jq -e '.inbounds[0].streamSettings.hysteriaSettings.masquerade.type == "string"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo xray run -test -c "$T/remnawave-profiles/hysteria2-tls.json"
+
+      - name: RKN apply precheck works without SSH environment
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          set +e
+          printf '\n' | sudo env -u SSH_CLIENT -u SSH_CONNECTION APP_DIR="$T" \
+            bash production/rkn-watcher-manager.sh apply >/tmp/rkn-console.out 2>&1
+          rc=$?
+          set -e
+          test "$rc" -eq 0
+          grep -q 'SSH_CLIENT/SSH_CONNECTION не заданы' /tmp/rkn-console.out
+          ! grep -qi 'unbound variable' /tmp/rkn-console.out
