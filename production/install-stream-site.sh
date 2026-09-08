@@ -11,8 +11,10 @@ BUNDLED_STREAM_DIR="${BUNDLED_STREAM_DIR:-$REPO_ROOT/assets/stream-site}"
 STREAM_SITE_ARCHIVE="${STREAM_SITE_ARCHIVE:-}"
 STREAM_SITE_ARCHIVE_URL="${STREAM_SITE_ARCHIVE_URL:-}"
 STREAM_SITE_SHA256="${STREAM_SITE_SHA256:-}"
-STREAM_SITE_URL="${STREAM_SITE_URL:-https://rustream.remna.space}"
 SELFSTEAL_SITE="${SELFSTEAL_SITE:-}"
+REPO="${REMNANODE_REPO:-evgmahov-blip/setup-remna-node}"
+REPO_REF="${REMNANODE_REPO_REF:-custom}"
+STREAM_REPO_INDEX_URL="https://raw.githubusercontent.com/${REPO}/${REPO_REF}/assets/stream-site/index.html"
 
 RADIO_REPO="Balbuto/radio-stub-site"
 RADIO_COMMIT="276908d5fed3faaadfb3a331ab7acad18824a9b9"
@@ -75,35 +77,41 @@ install_from_archive_url(){
   rm -f "$tmp"
 }
 
-install_stream_from_canonical_site(){
-  local tmpd idx
+install_stream_from_repo(){
+  local tmpd
   tmpd="$(mktemp -d)"
-  wget -q --secure-protocol=TLSv1_2 --timeout=20 --tries=2 --page-requisites --convert-links \
-    --adjust-extension --no-host-directories --directory-prefix="$tmpd" "$STREAM_SITE_URL" || true
-  idx="$(find "$tmpd" -type f -name 'index.html*' -print -quit)"
-  [[ -n "$idx" && -s "$idx" ]] || { rm -rf "$tmpd"; fail "Не удалось получить STREAM с $STREAM_SITE_URL"; }
+  curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --max-time 60 --retry 2 \
+    "$STREAM_REPO_INDEX_URL" -o "$tmpd/index.html" || {
+      rm -rf "$tmpd"
+      fail "Не удалось скачать versioned STREAM asset из ${REPO}@${REPO_REF}"
+    }
+  [[ -s "$tmpd/index.html" ]] || { rm -rf "$tmpd"; fail "STREAM index.html пуст"; }
   clear_webroot
-  cp -a "$(dirname "$idx")"/. "$WEBROOT"/
-  [[ -f "$WEBROOT/index.html" ]] || mv "$WEBROOT/$(basename "$idx")" "$WEBROOT/index.html"
+  install -m 0644 "$tmpd/index.html" "$WEBROOT/index.html"
   rm -rf "$tmpd"
   fix_permissions
-  log "STREAM SelfSteal установлен из канонического источника"
+  log "STREAM SelfSteal установлен из GitHub asset: ${REPO}@${REPO_REF}"
 }
 
 install_stream_site(){
+  local source=""
   if [[ -s "$BUNDLED_STREAM_DIR/index.html" ]]; then
     install_from_directory "$BUNDLED_STREAM_DIR"
+    source="bundled:${BUNDLED_STREAM_DIR}"
   elif [[ -n "$STREAM_SITE_ARCHIVE" ]]; then
     install_from_archive "$STREAM_SITE_ARCHIVE"
+    source="archive:${STREAM_SITE_ARCHIVE}"
   elif [[ -n "$STREAM_SITE_ARCHIVE_URL" ]]; then
     install_from_archive_url
+    source="archive-url:${STREAM_SITE_ARCHIVE_URL}"
   else
-    install_stream_from_canonical_site
+    install_stream_from_repo
+    source="github:${REPO}@${REPO_REF}:assets/stream-site/index.html"
   fi
   mkdir -p "$APP_DIR"
   cat > "$STATE_FILE" <<EOF
 TYPE=stream
-SOURCE=$STREAM_SITE_URL
+SOURCE=$source
 EOF
   chmod 600 "$STATE_FILE"
 }
@@ -118,8 +126,6 @@ install_radio_site(){
   curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --max-time 60 --retry 2 \
     "$RADIO_ADMIN_URL" -o "$tmpd/admin.html" || { rm -rf "$tmpd"; fail "Не удалось скачать RADIO admin.html"; }
 
-  # Убираем публичную ссылку на управление. Сам admin остается same-origin,
-  # чтобы штатный localStorage radio-stub-site продолжал работать.
   sed -i '/<div class="toggle-bar">/,/<\/div>/d' "$tmpd/index.html"
   admin_slug="$(random_admin_slug)"
   admin_name="${admin_slug}.html"
@@ -149,7 +155,7 @@ choose_site(){
     radio|2) printf 'radio\n'; return 0 ;;
   esac
   printf '\nВыберите SelfSteal-сайт:\n' >&2
-  printf '  1) STREAM — стрим-сайт проекта evgmahov-blip/remna-node-scripts\n' >&2
+  printf '  1) STREAM — versioned asset из evgmahov-blip/setup-remna-node\n' >&2
   printf '  2) RADIO  — Balbuto/radio-stub-site со скрытым URL управления\n' >&2
   printf 'Выбор [1]: ' >&2
   read -r choice
@@ -176,7 +182,6 @@ main(){
   echo '#################### НАЧАЛО ВЫВОДА: SELFSTEAL SITE ####################'
   require_root
   command -v curl >/dev/null 2>&1 || fail "curl не найден"
-  command -v wget >/dev/null 2>&1 || fail "wget не найден"
   command -v openssl >/dev/null 2>&1 || fail "openssl не найден"
   case "$(choose_site)" in
     stream) install_stream_site ;;
