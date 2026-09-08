@@ -1,0 +1,58 @@
+name: transport-profile-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax
+        run: |
+          bash -n setup_node.sh
+          bash -n production/remnawave-transport-manager.sh
+
+      - name: Generate XHTTP and RAW profiles
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'www.microsoft.com\n' > "$T/.reality_sni"
+          printf 'www.microsoft.com:443\n' > "$T/.reality_target"
+          cat > "$T/reality.env" <<'EOF'
+          REALITY_PRIVATE_KEY=test-private-key
+          REALITY_PUBLIC_KEY=test-public-key
+          REALITY_SHORT_ID=0123456789abcdef
+          REALITY_SERVER_NAME=www.microsoft.com
+          REALITY_TARGET=www.microsoft.com:443
+          EOF
+
+          printf '1\n' | APP_DIR="$T" bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
+          jq empty "$T/remnawave-profiles/xhttp-reality.json"
+          jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
+          jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
+
+          printf '1\n' | APP_DIR="$T" bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
+          jq empty "$T/remnawave-profiles/raw-reality.json"
+          jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
+          jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
+
+      - name: Generate Hysteria2 profile
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/certs"
+          printf 'node.example.com\n' > "$T/.node_domain"
+          printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
+          printf 'dummy-key\n' > "$T/certs/privkey.pem"
+
+          APP_DIR="$T" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
+          jq empty "$T/remnawave-profiles/hysteria2-tls.json"
+          jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
+          jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
