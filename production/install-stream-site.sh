@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 APP_DIR="${APP_DIR:-/opt/remnanode}"
-WEBROOT="${WEBROOT:-/var/www/mstream}"
+WEBROOT="${WEBROOT:-/var/www/html}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 BUNDLED_SITE_DIR="${BUNDLED_SITE_DIR:-$REPO_ROOT/assets/stream-site}"
