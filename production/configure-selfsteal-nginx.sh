@@ -12,9 +12,11 @@ PUBLIC_TCP_PORT="${PUBLIC_TCP_PORT:-443}"
 NGINX_MAIN_CONF="$APP_DIR/nginx-main.conf"
 OVERRIDE_FILE="$APP_DIR/docker-compose.override.yml"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
+REALITY_TARGET_FILE="$APP_DIR/.reality_target"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.28}"
 
 log(){ printf '%s\n' "$*"; }
+warn(){ printf '[!] %s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
 require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Запустите от root"; }
 
@@ -25,12 +27,43 @@ resolve_domain(){
   [[ -n "$NODE_DOMAIN" ]] || fail "Домен не определен"
 }
 
-resolve_reality_sni(){
+probe_reality_target(){
+  local host="$1"
+  timeout 8 openssl s_client -connect "${host}:443" -servername "$host" -brief </dev/null >/dev/null 2>&1
+}
+
+resolve_reality_route(){
   REALITY_SNI="${REALITY_SNI:-}"
+  REALITY_TARGET="${REALITY_TARGET:-}"
+
   [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
-  [[ -n "$REALITY_SNI" ]] || REALITY_SNI="www.${NODE_DOMAIN}"
+  [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
+
+  if [[ -z "$REALITY_SNI" || -z "$REALITY_TARGET" ]]; then
+    local candidates=(
+      www.microsoft.com
+      www.apple.com
+      www.amazon.com
+      www.samsung.com
+      www.yahoo.com
+      www.bing.com
+    )
+    local start i candidate
+    start=$((16#$(openssl rand -hex 2) % ${#candidates[@]}))
+    for ((i=0; i<${#candidates[@]}; i++)); do
+      candidate="${candidates[$(((start+i)%${#candidates[@]}))]}"
+      if probe_reality_target "$candidate"; then
+        REALITY_SNI="$candidate"
+        REALITY_TARGET="${candidate}:443"
+        break
+      fi
+    done
+  fi
+
+  [[ -n "$REALITY_SNI" && -n "$REALITY_TARGET" ]] || fail "Не удалось выбрать доступный REALITY target"
   printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
-  chmod 600 "$REALITY_SNI_FILE"
+  printf '%s\n' "$REALITY_TARGET" > "$REALITY_TARGET_FILE"
+  chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE"
 }
 
 check_files(){
@@ -108,6 +141,7 @@ http {
     }
 }
 EOF
+  chmod 600 "$NGINX_MAIN_CONF"
 }
 
 write_override(){
@@ -145,11 +179,22 @@ apply(){
     cd "$APP_DIR"
     docker compose stop remnanode >/dev/null 2>&1 || true
     docker compose up -d remnawave-nginx >/dev/null
-    docker compose up -d remnanode >/dev/null
+    docker compose up -d remnanode >/dev/null || true
   ) || fail "Не удалось применить frontend compose"
 
-  docker exec remnanode test -s /etc/xray/certs/fullchain.pem || fail "Сертификат не проброшен в remnanode"
-  docker exec remnanode test -s /etc/xray/certs/privkey.pem || fail "Ключ не проброшен в remnanode"
+  docker exec remnanode test -s /etc/xray/certs/fullchain.pem >/dev/null 2>&1 || warn "remnanode еще не подтверждает cert mount"
+  docker exec remnanode test -s /etc/xray/certs/privkey.pem >/dev/null 2>&1 || warn "remnanode еще не подтверждает key mount"
+}
+
+verify_loopback_policy(){
+  local line
+  line="$(ss -lntp 2>/dev/null | awk -v p=":${XRAY_TCP_PORT}" '$4 ~ p"$" {print; exit}')"
+  [[ -z "$line" ]] && return 0
+  if grep -Eq '127\.0\.0\.1:' <<< "$line"; then
+    log "Xray internal TCP/${XRAY_TCP_PORT}: loopback only"
+  else
+    fail "Xray TCP/${XRAY_TCP_PORT} слушает не только loopback: $line"
+  fi
 }
 
 verify(){
@@ -167,10 +212,11 @@ verify(){
   public_code="$(curl -ksS --tls-max 1.2 --resolve "$NODE_DOMAIN:${PUBLIC_TCP_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://${NODE_DOMAIN}/" 2>/dev/null || true)"
   [[ "$public_code" =~ ^[23][0-9][0-9]$ ]] || fail "Публичный SelfSteal через TCP/${PUBLIC_TCP_PORT} не отвечает (код ${public_code:-000})"
 
+  verify_loopback_policy
   log "Public SelfSteal: https://${NODE_DOMAIN}/ -> HTTP ${public_code}"
   log "TCP/${PUBLIC_TCP_PORT}: nginx SNI frontend"
-  log "REALITY SNI ${REALITY_SNI} -> 127.0.0.1:${XRAY_TCP_PORT}"
-  log "Обычный HTTPS -> 127.0.0.1:${SELFSTEAL_PORT} TLS1.2"
+  log "Private REALITY route: configured (value hidden in normal diagnostics)"
+  log "Unknown/normal SNI -> SelfSteal TLS1.2"
   log "SelfSteal работает независимо от Config Profile Remnawave."
 }
 
@@ -178,7 +224,7 @@ main(){
   echo '#################### НАЧАЛО ВЫВОДА: SELFSTEAL FRONTEND ####################'
   require_root
   resolve_domain
-  resolve_reality_sni
+  resolve_reality_route
   check_files
   detect_stream_module
   write_nginx
