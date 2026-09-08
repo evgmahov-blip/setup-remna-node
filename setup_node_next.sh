@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-baf79b4eeaf1acf1319c50d6b216a3a2b2419be7}"
+MODULE_REF="${REMNANODE_REPO_REF:-e7895ba764bcfa969abb428ef0fd04a61a3d368f}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
@@ -15,6 +15,7 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="eed8ab8bd354de4a43c99900a8ac747323beb10430464c3f4d485ad8f672d4c7"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
+  [production/selfsteal-site-manager.sh]="67394e6bf77dfe843e7656199a585ee1e5fa2dec01e6313157e9068d4e8b33d6"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
 )
 
@@ -89,12 +90,32 @@ fetch_module(){
   fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel@${MODULE_REF}" "$want"
 }
 
+run_selfsteal_default(){
+  local f="$WORK_DIR/selfsteal-site-manager.sh"
+  fetch_module "production/selfsteal-site-manager.sh" "$f" || return 1
+  APP_DIR="$APP_DIR" bash "$f" ensure
+}
+
+run_selfsteal_site(){
+  local f="$WORK_DIR/selfsteal-site-manager.sh"
+  fetch_module "production/selfsteal-site-manager.sh" "$f" || return 1
+  APP_DIR="$APP_DIR" bash "$f" choose
+}
+
 run_legacy(){
-  local f="$WORK_DIR/setup_node-legacy.sh"
+  local f="$WORK_DIR/setup_node-legacy.sh" rc
   echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
   echo -e "${GRAY}Commit: ${LEGACY_COMMIT}${NC}"
   fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
-  bash "$f"
+  if bash "$f"; then
+    if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then
+      echo -e "${GREEN}[SELFSTEAL]${NC} Применяю сохранённый сайт; если выбор ещё не делали — STREAM."
+      run_selfsteal_default
+    fi
+  else
+    rc=$?
+    return "$rc"
+  fi
 }
 
 run_transport(){
@@ -221,6 +242,7 @@ show_status(){
   printf '  %-22s %s\n' 'Transport profile:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality SNI:' "$(cat "$APP_DIR/.reality_sni" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality target:' "$(cat "$APP_DIR/.reality_target" 2>/dev/null || echo '-')"
+  printf '  %-22s %s\n' 'SelfSteal site:' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo 'stream (default)')"
   printf '  %-22s %s\n' 'XHTTP signature:' "$( [[ -s "$APP_DIR/xhttp-signature.json" ]] && echo saved || echo '-' )"
   echo
   echo -e "${BLUE}[PORTS]${NC}"
@@ -246,19 +268,20 @@ menu(){
     echo
     echo -e "${MAGENTA}  [REALITY / SNI]${NC}"
     echo -e "   ${WHITE}6)${NC} 🎭 Показать текущий SNI / target / состояние пула"
+    echo -e "   ${WHITE}7)${NC} 🌐 SelfSteal сайт — STREAM / RADIO ${GRAY}(default: STREAM)${NC}"
     echo -e "      ${GRAY}Смена SNI — только вручную внутри пункта 3, без автопереключений.${NC}"
     echo
     echo -e "${YELLOW}  [SECURITY]${NC}"
-    echo -e "   ${WHITE}7)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
+    echo -e "   ${WHITE}8)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
     echo
     echo -e "${BLUE}  [СТАРЫЕ ПРОВЕРЕННЫЕ ФУНКЦИИ]${NC}"
-    echo -e "      ${GRAY}SelfSteal сайты, SSL, Telemt, Xray version, UFW, IPv6, логи, тесты — пункт 1.${NC}"
+    echo -e "      ${GRAY}SSL, Telemt, Xray version, UFW, IPv6, логи, тесты — пункт 1.${NC}"
     echo
     echo -e "${RED}  [ВЫХОД]${NC}"
     echo -e "   ${WHITE}0)${NC} Закрыть меню"
     echo
     echo -e "${GRAY}────────────────────────────────────────────────────────────────────${NC}"
-    read -r -p 'Выбери действие [0-7]: ' choice
+    read -r -p 'Выбери действие [0-8]: ' choice
 
     case "${choice:-0}" in
       1) run_legacy; pause ;;
@@ -267,7 +290,8 @@ menu(){
       4) show_profiles ;;
       5) run_xhttp_signature; pause ;;
       6) show_sni ;;
-      7) run_rkn; pause ;;
+      7) run_selfsteal_site; pause ;;
+      8) run_rkn; pause ;;
       0) return 0 ;;
       *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; sleep 1 ;;
     esac
