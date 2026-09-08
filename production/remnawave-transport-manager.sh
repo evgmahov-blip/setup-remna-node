@@ -13,7 +13,8 @@ REALITY_SNI_FILE="$APP_DIR/.reality_sni"
 REALITY_TARGET_FILE="$APP_DIR/.reality_target"
 XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
 SNI_POOL_CACHE="$APP_DIR/reality-targets.cache"
-SNI_POOL_SOURCE="https://raw.githubusercontent.com/evkir/reality-probe/main/reality_probe.py"
+SNI_POOL_REF="${SNI_POOL_REF:-c85e2950ea73f01639aa6243732b3622ed1bdbf5}"
+SNI_POOL_SOURCE="${SNI_POOL_SOURCE:-https://raw.githubusercontent.com/evkir/reality-probe/${SNI_POOL_REF}/reality_probe.py}"
 PROFILE_DIR="$APP_DIR/remnawave-profiles"
 PUBLIC_PORT="${PUBLIC_PORT:-443}"
 SELFSTEAL_SOCKET="${SELFSTEAL_SOCKET:-/dev/shm/nginx.sock}"
@@ -62,7 +63,7 @@ refresh_sni_pool(){
     count="$(wc -l < "$tmp.pool" | tr -d ' ')"
     if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 20 )); then
       install -m 0600 "$tmp.pool" "$SNI_POOL_CACHE"
-      log "[OK] SNI pool обновлен: $count доменов"
+      log "[OK] SNI pool обновлен: $count доменов (pinned $SNI_POOL_REF)"
       rm -f "$tmp" "$tmp.pool"
       return 0
     fi
@@ -256,9 +257,17 @@ profile_suffix(){
 EOF
 }
 
+atomic_profile_install(){
+  local tmp="$1" dst="$2"
+  jq empty "$tmp" || { rm -f "$tmp"; fail "Сгенерирован некорректный JSON: $dst"; }
+  install -m 600 "$tmp" "$dst"
+  rm -f "$tmp"
+}
+
 write_xhttp_profile(){
-  local f="$PROFILE_DIR/xhttp-reality.json"
+  local f="$PROFILE_DIR/xhttp-reality.json" tmp
   resolve_xhttp_path
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-reality.XXXXXX")"
   {
     base_profile_prefix
     cat <<EOF
@@ -287,12 +296,13 @@ write_xhttp_profile(){
     }
 EOF
     profile_suffix
-  } > "$f"
-  jq empty "$f"
+  } > "$tmp"
+  atomic_profile_install "$tmp" "$f"
 }
 
 write_raw_profile(){
-  local f="$PROFILE_DIR/raw-reality.json"
+  local f="$PROFILE_DIR/raw-reality.json" tmp
+  tmp="$(mktemp "$PROFILE_DIR/.raw-reality.XXXXXX")"
   {
     base_profile_prefix
     cat <<EOF
@@ -318,8 +328,8 @@ write_raw_profile(){
     }
 EOF
     profile_suffix
-  } > "$f"
-  jq empty "$f"
+  } > "$tmp"
+  atomic_profile_install "$tmp" "$f"
 }
 
 hysteria_masquerade_json(){
@@ -331,9 +341,10 @@ hysteria_masquerade_json(){
 }
 
 write_hysteria_profile(){
-  local f="$PROFILE_DIR/hysteria2-tls.json" masq
+  local f="$PROFILE_DIR/hysteria2-tls.json" masq tmp
   [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || fail "Для Hysteria2 нужны $CERTS_DIR/fullchain.pem и privkey.pem"
   masq="$(hysteria_masquerade_json)"
+  tmp="$(mktemp "$PROFILE_DIR/.hysteria2-tls.XXXXXX")"
   {
     base_profile_prefix
     cat <<EOF
@@ -363,8 +374,8 @@ write_hysteria_profile(){
     }
 EOF
     profile_suffix
-  } > "$f"
-  jq empty "$f"
+  } > "$tmp"
+  atomic_profile_install "$tmp" "$f"
 }
 
 write_host_values(){
@@ -382,6 +393,7 @@ SNI: $REALITY_SNI
 Fingerprint: firefox
 Host: пусто
 Path: $XHTTP_PATH
+Flow: пусто
 Public key: $REALITY_PUBLIC_KEY
 Short ID: $REALITY_SHORT_ID
 Camouflage: $CAMOUFLAGE_MODE
@@ -399,6 +411,7 @@ SNI: $REALITY_SNI
 Fingerprint: firefox
 Host: пусто
 Path: пусто
+Flow: пусто
 Public key: $REALITY_PUBLIC_KEY
 Short ID: $REALITY_SHORT_ID
 Camouflage: $CAMOUFLAGE_MODE
@@ -418,6 +431,7 @@ Masquerade: встроенная копия текущего SelfSteal index.htm
 EOF
       ;;
   esac
+  chmod 600 "$PROFILE_DIR"/host-*.txt 2>/dev/null || true
 }
 
 generate_transport(){
