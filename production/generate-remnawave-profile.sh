@@ -7,11 +7,14 @@ CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
 PROFILE_FILE="${PROFILE_FILE:-$APP_DIR/config-profile.json}"
 PROFILE_PUBLIC_FILE="${PROFILE_PUBLIC_FILE:-$APP_DIR/config-profile-public.txt}"
 READY_FILE="${READY_FILE:-$APP_DIR/remnawave-ready.txt}"
+EXTERNAL_SNIPPET_FILE="${EXTERNAL_SNIPPET_FILE:-$APP_DIR/external-json-inject-snippet.json}"
 REALITY_ENV="${REALITY_ENV:-$APP_DIR/reality.env}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
 XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
 HYSTERIA_STATE_FILE="$APP_DIR/.hysteria2-enabled"
-XHTTP_PORT="${XHTTP_PORT:-443}"
+REALITY_SNI_FILE="$APP_DIR/.reality_sni"
+PUBLIC_TCP_PORT="${PUBLIC_TCP_PORT:-443}"
+XRAY_TCP_PORT="${XRAY_TCP_PORT:-10443}"
 HYSTERIA_PORT="${HYSTERIA_PORT:-443}"
 SELFSTEAL_PORT="${SELFSTEAL_PORT:-8443}"
 ENABLE_HYSTERIA2="${ENABLE_HYSTERIA2:-ask}"
@@ -28,11 +31,20 @@ resolve_domain(){
   [[ -z "$NODE_DOMAIN" && -r "$NODE_DOMAIN_FILE" ]] && NODE_DOMAIN="$(tr -d '[:space:]' < "$NODE_DOMAIN_FILE")"
   [[ -n "$NODE_DOMAIN" ]] || read -r -p "Домен ноды: " NODE_DOMAIN
   [[ -n "$NODE_DOMAIN" ]] || fail "Домен ноды не определен"
+  local first
+  first="${NODE_DOMAIN%%.*}"
+  HOST_REMARK="${HOST_REMARK:-${first^^}-XHTTP}"
 }
 
-gen_path(){
-  printf '/api/%s/%s.ts\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 8)"
+resolve_reality_sni(){
+  REALITY_SNI="${REALITY_SNI:-}"
+  [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
+  [[ -n "$REALITY_SNI" ]] || REALITY_SNI="www.${NODE_DOMAIN}"
+  printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
+  chmod 600 "$REALITY_SNI_FILE"
 }
+
+gen_path(){ printf '/api/%s/%s.ts\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 8)"; }
 
 resolve_path(){
   XHTTP_PATH="${XHTTP_PATH:-}"
@@ -49,16 +61,12 @@ resolve_hysteria(){
     1|yes|YES|true|TRUE|y|Y) ENABLE_HYSTERIA2=1 ;;
     0|no|NO|false|FALSE|n|N) ENABLE_HYSTERIA2=0 ;;
     keep)
-      if [[ -r "$HYSTERIA_STATE_FILE" ]]; then
-        ENABLE_HYSTERIA2="$(tr -d '[:space:]' < "$HYSTERIA_STATE_FILE")"
-      else
-        ENABLE_HYSTERIA2=0
-      fi
+      if [[ -r "$HYSTERIA_STATE_FILE" ]]; then ENABLE_HYSTERIA2="$(tr -d '[:space:]' < "$HYSTERIA_STATE_FILE")"; else ENABLE_HYSTERIA2=0; fi
       ;;
     ask)
       local answer
-      printf '\nHysteria2 использует QUIC/UDP и TLS 1.3. В некоторых сетях РФ этот транспорт может фильтроваться.\n'
-      read -r -p "Добавить Hysteria2 как дополнительный транспорт на UDP/443? [y/N]: " answer
+      printf '\nHysteria2 = UDP/443 + QUIC + TLS1.3. В РФ может фильтроваться; основной XHTTP+REALITY от нее не зависит.\n'
+      read -r -p "Добавить Hysteria2 как дополнительный транспорт? [y/N]: " answer
       case "${answer:-N}" in [Yy]*) ENABLE_HYSTERIA2=1 ;; *) ENABLE_HYSTERIA2=0 ;; esac
       ;;
     *) fail "ENABLE_HYSTERIA2 должен быть 0/1/ask/keep" ;;
@@ -70,74 +78,49 @@ resolve_hysteria(){
 find_rw_core(){
   RW_CORE="$(command -v rw-core 2>/dev/null || true)"
   [[ -x "$RW_CORE" ]] && return 0
-  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
-    RW_CORE="docker:remnanode"
-    return 0
-  fi
-  fail "rw-core не найден. Сначала должна быть установлена/запущена Remnawave Node"
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then RW_CORE="docker:remnanode"; return 0; fi
+  fail "rw-core не найден"
 }
 
 generate_reality_material(){
+  local private="" public="" short="" raw
   if [[ -s "$REALITY_ENV" ]]; then
-    # shellcheck disable=SC1090
-    . "$REALITY_ENV"
-    if [[ -n "${REALITY_PRIVATE_KEY:-}" && -n "${REALITY_PUBLIC_KEY:-}" && -n "${REALITY_SHORT_ID:-}" ]]; then
-      return 0
+    private="$(sed -n 's/^REALITY_PRIVATE_KEY=//p' "$REALITY_ENV" | head -1)"
+    public="$(sed -n 's/^REALITY_PUBLIC_KEY=//p' "$REALITY_ENV" | head -1)"
+    short="$(sed -n 's/^REALITY_SHORT_ID=//p' "$REALITY_ENV" | head -1)"
+  fi
+  if [[ -z "$private" || -z "$public" || -z "$short" ]]; then
+    if [[ "$RW_CORE" == docker:* ]]; then
+      raw="$(docker exec remnanode /usr/local/bin/rw-core x25519 2>/dev/null)" || fail "rw-core x25519 завершился ошибкой"
+    else
+      raw="$("$RW_CORE" x25519 2>/dev/null)" || fail "rw-core x25519 завершился ошибкой"
     fi
+    private="$(printf '%s\n' "$raw" | sed -nE 's/^[[:space:]]*(PrivateKey|Private key):[[:space:]]*//p' | head -1)"
+    public="$(printf '%s\n' "$raw" | sed -nE 's/^[[:space:]]*(Password([[:space:]]*\([^)]*\))?|PublicKey|Public key):[[:space:]]*//p' | head -1)"
+    short="$(openssl rand -hex 8)"
   fi
+  [[ -n "$private" && -n "$public" && -n "$short" ]] || fail "Не удалось получить Reality keys"
 
-  local raw private public short
-  if [[ "$RW_CORE" == docker:* ]]; then
-    raw="$(docker exec remnanode /usr/local/bin/rw-core x25519 2>/dev/null)" || fail "Не удалось выполнить rw-core x25519 в контейнере"
-  else
-    raw="$("$RW_CORE" x25519 2>/dev/null)" || fail "rw-core x25519 завершился ошибкой"
-  fi
-
-  private="$(printf '%s\n' "$raw" | sed -nE 's/^[[:space:]]*(PrivateKey|Private key):[[:space:]]*//p' | head -1)"
-  public="$(printf '%s\n' "$raw" | sed -nE 's/^[[:space:]]*(Password([[:space:]]*\([^)]*\))?|PublicKey|Public key):[[:space:]]*//p' | head -1)"
-  short="$(openssl rand -hex 8)"
-  [[ -n "$private" && -n "$public" ]] || fail "Не удалось разобрать вывод rw-core x25519"
-
-  umask 077
-  cat > "$REALITY_ENV" <<EOF
-REALITY_PRIVATE_KEY=$private
-REALITY_PUBLIC_KEY=$public
-REALITY_SHORT_ID=$short
-REALITY_SERVER_NAME=$NODE_DOMAIN
-REALITY_TARGET=127.0.0.1:$SELFSTEAL_PORT
-EOF
-  chmod 600 "$REALITY_ENV"
   REALITY_PRIVATE_KEY="$private"
   REALITY_PUBLIC_KEY="$public"
   REALITY_SHORT_ID="$short"
-  unset raw private public short
+  umask 077
+  cat > "$REALITY_ENV" <<EOF
+REALITY_PRIVATE_KEY=$REALITY_PRIVATE_KEY
+REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY
+REALITY_SHORT_ID=$REALITY_SHORT_ID
+REALITY_SERVER_NAME=$REALITY_SNI
+REALITY_TARGET=127.0.0.1:$SELFSTEAL_PORT
+EOF
+  chmod 600 "$REALITY_ENV"
 }
 
-check_certs_for_hysteria(){
+check_hysteria(){
   [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
-  [[ -s "$CERTS_DIR/fullchain.pem" ]] || fail "Для Hysteria2 нет $CERTS_DIR/fullchain.pem"
-  [[ -s "$CERTS_DIR/privkey.pem" ]] || fail "Для Hysteria2 нет $CERTS_DIR/privkey.pem"
+  [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || fail "Для Hysteria2 нет сертификатов в $CERTS_DIR"
   openssl x509 -in "$CERTS_DIR/fullchain.pem" -noout >/dev/null 2>&1 || fail "Некорректный fullchain.pem"
   openssl pkey -in "$CERTS_DIR/privkey.pem" -noout >/dev/null 2>&1 || fail "Некорректный privkey.pem"
-}
-
-ensure_cert_mount(){
-  [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
-  [[ -f "$APP_DIR/docker-compose.yml" ]] || fail "Не найден $APP_DIR/docker-compose.yml"
-  (
-    cd "$APP_DIR"
-    docker compose config | grep -q '/etc/xray/certs'
-  ) || fail "В итоговом docker compose отсутствует mount сертификатов в /etc/xray/certs"
-  log "Cert mount присутствует в итоговом docker compose"
-}
-
-verify_cert_mount(){
-  [[ "$ENABLE_HYSTERIA2" -eq 1 ]] || return 0
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode; then
-    docker exec remnanode test -s "$XRAY_CERT_FILE" || fail "В контейнере нет $XRAY_CERT_FILE"
-    docker exec remnanode test -s "$XRAY_KEY_FILE" || fail "В контейнере нет $XRAY_KEY_FILE"
-    log "Проверка cert mount в контейнере: OK"
-  fi
+  (cd "$APP_DIR" && docker compose config | grep -q '/etc/xray/certs') || fail "Cert mount /etc/xray/certs отсутствует"
 }
 
 write_profile(){
@@ -150,10 +133,7 @@ write_profile(){
       "listen": "0.0.0.0",
       "port": $HYSTERIA_PORT,
       "protocol": "hysteria",
-      "settings": {
-        "version": 2,
-        "users": []
-      },
+      "settings": {"version": 2, "users": []},
       "streamSettings": {
         "network": "hysteria",
         "security": "tls",
@@ -171,12 +151,7 @@ write_profile(){
           "serverName": "$NODE_DOMAIN",
           "minVersion": "1.3",
           "alpn": ["h3"],
-          "certificates": [
-            {
-              "certificateFile": "$XRAY_CERT_FILE",
-              "keyFile": "$XRAY_KEY_FILE"
-            }
-          ]
+          "certificates": [{"certificateFile": "$XRAY_CERT_FILE", "keyFile": "$XRAY_KEY_FILE"}]
         }
       }
     }
@@ -210,18 +185,11 @@ EOF
   "inbounds": [
     {
       "tag": "XHTTP_REALITY",
-      "listen": "0.0.0.0",
-      "port": $XHTTP_PORT,
+      "listen": "127.0.0.1",
+      "port": $XRAY_TCP_PORT,
       "protocol": "vless",
-      "settings": {
-        "clients": [],
-        "decryption": "none"
-      },
-      "sniffing": {
-        "enabled": true,
-        "routeOnly": true,
-        "destOverride": ["http", "tls", "quic"]
-      },
+      "settings": {"clients": [], "decryption": "none"},
+      "sniffing": {"enabled": true, "routeOnly": true, "destOverride": ["http", "tls", "quic"]},
       "streamSettings": {
         "network": "xhttp",
         "security": "reality",
@@ -229,7 +197,7 @@ EOF
           "show": false,
           "target": "127.0.0.1:$SELFSTEAL_PORT",
           "xver": 0,
-          "serverNames": ["$NODE_DOMAIN"],
+          "serverNames": ["$REALITY_SNI"],
           "privateKey": "$REALITY_PRIVATE_KEY",
           "minClientVer": "0.0.0",
           "shortIds": ["$REALITY_SHORT_ID"]
@@ -259,132 +227,133 @@ EOF
   "routing": {
     "domainStrategy": "AsIs",
     "rules": [
-      {
-        "type": "field",
-        "ip": [
-          "127.0.0.0/8",
-          "10.0.0.0/8",
-          "172.16.0.0/12",
-          "192.168.0.0/16",
-          "169.254.0.0/16",
-          "224.0.0.0/4",
-          "240.0.0.0/4",
-          "::1/128",
-          "fc00::/7",
-          "fe80::/10"
-        ],
-        "outboundTag": "BLOCK"
-      },
-      {
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "BLOCK"
-      }
+      {"type": "field", "ip": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4", "::1/128", "fc00::/7", "fe80::/10"], "outboundTag": "BLOCK"},
+      {"type": "field", "protocol": ["bittorrent"], "outboundTag": "BLOCK"}
     ]
   }
 }
 EOF
   chmod 600 "$PROFILE_FILE"
+  jq empty "$PROFILE_FILE" || fail "Сгенерированный Config Profile невалидный JSON"
+}
+
+write_external_snippet(){
+  cat > "$EXTERNAL_SNIPPET_FILE" <<EOF
+{
+  "remnawave": {
+    "injectHosts": [
+      {
+        "selector": {
+          "type": "remarkRegex",
+          "pattern": "^${HOST_REMARK}$"
+        },
+        "selectFrom": "ALL",
+        "tagPrefix": "proxy"
+      }
+    ]
+  }
+}
+EOF
+  chmod 600 "$EXTERNAL_SNIPPET_FILE"
 }
 
 write_summaries(){
-  umask 077
-  cat > "$PROFILE_PUBLIC_FILE" <<EOF
-REMNAWAVE CONFIG PROFILE
-========================
-Domain: $NODE_DOMAIN
-
-Primary inbound:
-  Tag: XHTTP_REALITY
-  Public port: 443/TCP
-  Transport: XHTTP
-  Security: REALITY
-  Path: $XHTTP_PATH
-  SNI/serverName: $NODE_DOMAIN
-  Public key: $REALITY_PUBLIC_KEY
-  Short ID: $REALITY_SHORT_ID
-  Fingerprint: firefox
-
-Optional Hysteria2: $([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && echo ENABLED || echo DISABLED)
-$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Tag: HYSTERIA2_TLS\n  Public port: 443/UDP\n  SNI: %s\n  Host certs: %s\n  Container certs: %s\n' "$NODE_DOMAIN" "$CERTS_DIR" "$XRAY_CERT_DIR")
-
-Full profile with private Reality key:
-  $PROFILE_FILE
-EOF
-  chmod 600 "$PROFILE_PUBLIC_FILE"
-
   cat > "$READY_FILE" <<EOF
-REMNAWAVE READY VALUES
-======================
+REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
+================================
 
-CONFIG PROFILE:
-  File: $PROFILE_FILE
-  Inbound: XHTTP_REALITY
+1. MANAGEMENT -> CONFIG PROFILES -> CREATE CONFIG PROFILE
+   Вставить целиком содержимое:
+   $PROFILE_FILE
 
-HOST XHTTP_REALITY:
-  Address: $NODE_DOMAIN
-  Port: 443
-  SNI: $NODE_DOMAIN
-  Host: $NODE_DOMAIN
-  Path: $XHTTP_PATH
-  Security: REALITY
-  Fingerprint: firefox
-  Public Key: $REALITY_PUBLIC_KEY
-  Short ID: $REALITY_SHORT_ID
+2. Назначить этот Config Profile ноде $NODE_DOMAIN.
+   Inbound XHTTP_REALITY слушает ВНУТРИ ноды 127.0.0.1:$XRAY_TCP_PORT.
+   Это намеренно: публичный TCP/$PUBLIC_TCP_PORT принадлежит SelfSteal frontend.
 
-HYSTERIA2:
-  Enabled: $ENABLE_HYSTERIA2
-$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf '  Inbound: HYSTERIA2_TLS\n  Address: %s\n  Port: 443/UDP\n  SNI: %s\n  ALPN: h3\n' "$NODE_DOMAIN" "$NODE_DOMAIN")
+3. MANAGEMENT -> HOSTS -> CREATE HOST
+   Remark:      $HOST_REMARK
+   Inbound:     XHTTP_REALITY
+   Address:     $NODE_DOMAIN
+   Port:        $PUBLIC_TCP_PORT   <-- вручную override; НЕ $XRAY_TCP_PORT
+   SNI:         $REALITY_SNI
+   Host:        $REALITY_SNI
+   Path:        $XHTTP_PATH
+   Fingerprint: firefox
+   Public key:  $REALITY_PUBLIC_KEY
+   Short ID:    $REALITY_SHORT_ID
 
-SELFSTEAL:
-  Target: 127.0.0.1:$SELFSTEAL_PORT
-  TLS: 1.2 only
+EXTERNAL XRAY_JSON
+------------------
+Файл совместимого injectHosts-фрагмента:
+  $EXTERNAL_SNIPPET_FILE
+
+Он выбирает Host по Remark = $HOST_REMARK и создает outbound с tagPrefix=proxy.
+Если в твоем External XRAY_JSON уже есть корневой объект "remnawave", НЕ заменять весь JSON — добавить эту injectHosts-группу в существующий объект.
+
+SELFSTEAL
+---------
+Public URL: https://$NODE_DOMAIN/
+Frontend: TCP/$PUBLIC_TCP_PORT nginx SNI mux
+REALITY route: SNI $REALITY_SNI -> 127.0.0.1:$XRAY_TCP_PORT
+Website route: остальные SNI -> 127.0.0.1:$SELFSTEAL_PORT TLS1.2
+SelfSteal не зависит от наличия/назначения Config Profile.
+
+HYSTERIA2
+---------
+Enabled: $ENABLE_HYSTERIA2
+$([[ "$ENABLE_HYSTERIA2" -eq 1 ]] && printf 'Inbound: HYSTERIA2_TLS\nPublic: %s:443/UDP\nCerts in container: /etc/xray/certs/fullchain.pem + privkey.pem\n' "$NODE_DOMAIN")
 EOF
   chmod 600 "$READY_FILE"
+
+  cat > "$PROFILE_PUBLIC_FILE" <<EOF
+Domain: $NODE_DOMAIN
+Public site: https://$NODE_DOMAIN/
+XHTTP public: $NODE_DOMAIN:$PUBLIC_TCP_PORT/TCP
+XHTTP internal inbound: 127.0.0.1:$XRAY_TCP_PORT
+REALITY SNI: $REALITY_SNI
+XHTTP path: $XHTTP_PATH
+Host Remark: $HOST_REMARK
+Public Key: $REALITY_PUBLIC_KEY
+Short ID: $REALITY_SHORT_ID
+Hysteria2: $ENABLE_HYSTERIA2
+EOF
+  chmod 600 "$PROFILE_PUBLIC_FILE"
 }
 
 configure_firewall(){
   command -v ufw >/dev/null 2>&1 || return 0
-  ufw allow 443/tcp comment 'XHTTP Reality' >/dev/null 2>&1 || true
-  if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then
-    ufw allow 443/udp comment 'Hysteria2' >/dev/null 2>&1 || true
-  fi
+  ufw allow "$PUBLIC_TCP_PORT"/tcp comment 'SelfSteal + XHTTP frontend' >/dev/null 2>&1 || true
+  if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then ufw allow 443/udp comment 'Hysteria2' >/dev/null 2>&1 || true; fi
   ufw reload >/dev/null 2>&1 || true
 }
 
 show_result(){
   echo
-  echo "Config Profile: $PROFILE_FILE"
-  echo "Ready values: $READY_FILE"
-  echo "Primary: $NODE_DOMAIN:443/TCP XHTTP + REALITY; path $XHTTP_PATH"
-  if [[ "$ENABLE_HYSTERIA2" -eq 1 ]]; then
-    echo "Optional: $NODE_DOMAIN:443/UDP Hysteria2"
-    echo "Certificates: $CERTS_DIR -> $XRAY_CERT_DIR:ro"
-  fi
+  echo '#################### НАЧАЛО ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'
+  cat "$PROFILE_FILE"
+  echo '#################### КОНЕЦ ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'
   echo
-  read -r -p "Показать полный Config Profile сейчас? [y/N]: " answer
-  case "${answer:-N}" in
-    [Yy]*) cat "$PROFILE_FILE" ;;
-    *) cat "$READY_FILE" ;;
-  esac
+  echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE HOST VALUES ####################'
+  cat "$READY_FILE"
+  echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE HOST VALUES ####################'
 }
 
 main(){
-  echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE PROFILE ####################'
+  echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE PROFILE GENERATOR ####################'
   require_root
   resolve_domain
+  resolve_reality_sni
   resolve_path
   resolve_hysteria
   find_rw_core
   generate_reality_material
-  check_certs_for_hysteria
-  ensure_cert_mount
-  verify_cert_mount
+  check_hysteria
   write_profile
+  write_external_snippet
   write_summaries
   configure_firewall
   show_result
-  echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE PROFILE ####################'
+  echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE PROFILE GENERATOR ####################'
 }
 
 main "$@"
