@@ -109,11 +109,71 @@ run_selfsteal_site(){
   APP_DIR="$APP_DIR" bash "$f" choose
 }
 
+prepare_legacy_for_next(){
+  local f="$1" tmp="${f}.next"
+  rm -f "$tmp"
+
+  if ! awk '
+    BEGIN { skip_proto=0; proto_done=0; decoy_done=0 }
+
+    /# Выбор протокола шифрования/ {
+      print "    # NEXT: July base always installs Reality/SelfSteal; modern transports are generated later."
+      print "    log \"${INFO} NEXT: базовая схема Reality/SelfSteal; XHTTP/RAW/Hysteria2 настраиваются отдельно.\""
+      print "    local protocol=\"reality\""
+      skip_proto=1
+      proto_done=1
+      next
+    }
+
+    skip_proto && /# Скачивание и генерация маскировочного сайта SelfSteal/ {
+      skip_proto=0
+      print
+      next
+    }
+
+    skip_proto { next }
+
+    /read -p \"Домен маскировки \(decoy domain\) \[github\.com\]: \" decoy_domain/ {
+      print "        decoy_domain=github.com"
+      decoy_done=1
+      next
+    }
+
+    { print }
+
+    END {
+      if (!proto_done || !decoy_done) exit 42
+    }
+  ' "$f" > "$tmp"; then
+    rm -f "$tmp"
+    printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось адаптировать July base для NEXT; исходный файл не запускаю."
+    return 1
+  fi
+
+  if grep -Fq 'Ваш выбор [1]:' "$tmp" || grep -Fq 'Домен маскировки (decoy domain)' "$tmp"; then
+    rm -f "$tmp"
+    printf '%b\n' "${RED}[ОШИБКА]${NC} В адаптированном July base остались старые transport/decoy prompts."
+    return 1
+  fi
+
+  if ! bash -n "$tmp"; then
+    rm -f "$tmp"
+    printf '%b\n' "${RED}[ОШИБКА]${NC} Адаптированный July base не прошёл bash -n; исходный файл не запускаю."
+    return 1
+  fi
+
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$f"
+  printf '%b\n' "${GREEN}[NEXT]${NC} Старый выбор transport и decoy скрыт; базовая схема фиксирована Reality/SelfSteal."
+  printf '%b\n' "${GREEN}[NEXT]${NC} Certbot Standalone остаётся штатным выбором SSL по Enter [2]."
+}
+
 run_legacy(){
   local f="$WORK_DIR/setup_node-legacy.sh" rc
   echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
   echo -e "${GRAY}Commit: ${LEGACY_COMMIT}${NC}"
   fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
+  prepare_legacy_for_next "$f" || return 1
   if bash "$f"; then
     echo -e "${GREEN}[NETWORK]${NC} Применяю проверенный NEXT-профиль сети: fq + BBR по умолчанию, если BBR доступен."
     if ! run_network_tuning; then
