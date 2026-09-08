@@ -187,7 +187,7 @@ jobs:
           chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
           sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=refresh XHTTP_SIGNATURE_MODE=none \
             bash production/remnawave-transport-manager.sh xhttp >/tmp/sni-refresh.out
-          count="$(sudo wc -l < "$T/reality-targets.cache")"
+          count="$(sudo wc -l "$T/reality-targets.cache" | awk '{print $1}')"
           test "$count" -ge 50
           ! grep -q 'встроенный резервный SNI pool' /tmp/sni-refresh.out
 
