@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-e7895ba764bcfa969abb428ef0fd04a61a3d368f}"
+MODULE_REF="${REMNANODE_REPO_REF:-fb4460702eccfff7268a9e5f1100d622dfae3fa6}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
@@ -15,7 +15,7 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="eed8ab8bd354de4a43c99900a8ac747323beb10430464c3f4d485ad8f672d4c7"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
-  [production/selfsteal-site-manager.sh]="67394e6bf77dfe843e7656199a585ee1e5fa2dec01e6313157e9068d4e8b33d6"
+  [production/selfsteal-site-manager.sh]="88be2227ef895061e95f8cbca008ec39df951e322cc230ad81ddf57d543eba26"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
 )
 
