@@ -38,6 +38,7 @@ curl_tls12(){ curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --m
 
 node_domain(){ cat "$APP_DIR/.node_domain" 2>/dev/null || true; }
 reality_sni(){ cat "$APP_DIR/.reality_sni" 2>/dev/null || true; }
+reality_target(){ cat "$APP_DIR/.reality_target" 2>/dev/null || true; }
 profile_exists(){ [[ -s "$APP_DIR/config-profile.json" ]]; }
 hysteria_state(){ cat "$APP_DIR/.hysteria2-enabled" 2>/dev/null || echo 0; }
 
@@ -107,21 +108,43 @@ run_zero_reset(){
 show_profile_state(){
   printf '  Домен:            %s\n' "$(node_domain)"
   printf '  SelfSteal:        %s\n' "$(sed -n 's/^TYPE=//p' "$APP_DIR/.selfsteal-site" 2>/dev/null || echo 'не настроен')"
-  if profile_exists; then
-    printf '  Локальный JSON:   СОЗДАН (это еще не означает, что он назначен ноде в панели)\n'
-  else
-    printf '  Локальный JSON:   НЕ СОЗДАН\n'
-  fi
+  if profile_exists; then printf '  Локальный JSON:   СОЗДАН (назначение в панели отдельно)\n'; else printf '  Локальный JSON:   НЕ СОЗДАН\n'; fi
   printf '  XHTTP path:       %s\n' "$(cat "$APP_DIR/.xhttp_path" 2>/dev/null || echo 'еще не создан')"
-  if [[ -s "$APP_DIR/.reality_sni" ]]; then printf '  REALITY route:    PRIVATE (показывается только в Host values)\n'; else printf '  REALITY route:    еще не создан\n'; fi
+  if [[ -s "$APP_DIR/.reality_sni" ]]; then printf '  REALITY camouflage: CONFIGURED (SNI скрыт; см. Host values)\n'; else printf '  REALITY camouflage: еще не создан\n'; fi
   if [[ "$(hysteria_state)" == 1 ]]; then printf '  Hysteria2:        ВКЛЮЧЕНА\n'; else printf '  Hysteria2:        выключена\n'; fi
 }
 
 run_profile_generator(){
   local mode="$1"
   ensure_bundle
-  bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
+  REALITY_SNI_MODE=keep bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
   ENABLE_HYSTERIA2="$mode" bash "$PRODUCTION_DIR/generate-remnawave-profile.sh"
+}
+
+run_reality_camouflage_manager(){
+  ensure_bundle
+  printf '%b=== REALITY CAMOUFLAGE SNI / TARGET ===%b\n\n' "$C" "$N"
+  printf 'Это TLS-имя внешней HTTPS-цели для REALITY. Это НЕ адрес ноды.\n'
+  printf 'Клиент по-прежнему подключается к %s:443.\n\n' "$(node_domain)"
+  if [[ -s "$APP_DIR/.reality_sni" ]]; then
+    printf 'Текущий camouflage SNI: %s\n' "$(reality_sni)"
+    printf 'Текущий target:         %s\n' "$(reality_target)"
+  else
+    printf 'Camouflage route еще не создан.\n'
+  fi
+  printf '\n  1) Оставить текущий и перепроверить\n'
+  printf '  2) Автоматически выбрать НОВУЮ проверенную HTTPS-цель\n'
+  printf '  3) Указать SNI вручную (target = этот же SNI:443)\n'
+  printf '  0) Назад\n\nВыбор [0]: '
+  local choice; read -r choice; choice=${choice:-0}
+  case "$choice" in
+    1) REALITY_SNI_MODE=keep bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
+    2) REALITY_SNI_MODE=rotate bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
+    3) REALITY_SNI_MODE=manual bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
+    0) return ;;
+    *) warn "Неизвестный пункт"; return ;;
+  esac
+  ENABLE_HYSTERIA2=keep bash "$PRODUCTION_DIR/generate-remnawave-profile.sh"
 }
 
 run_profile_manager(){
@@ -135,15 +158,16 @@ run_profile_manager(){
   printf '  - JSON из пункта 1/2 копируешь целиком в Management -> Config Profiles;\n'
   printf '  - после этого назначаешь профиль ноде;\n'
   printf '  - затем создаешь Host по готовым значениям из пункта 3;\n'
-  printf '  - External XRAY_JSON не заменяется: для него генерируется отдельный injectHosts-фрагмент.\n'
-  printf '  - private REALITY SNI/target не печатаются в обычной диагностике.\n\n'
+  printf '  - External XRAY_JSON не заменяется: для него генерируется отдельный injectHosts-фрагмент;\n'
+  printf '  - REALITY SNI = camouflage SNI внешней HTTPS-цели, а не адрес ноды.\n\n'
 
   printf '  1) СГЕНЕРИРОВАТЬ И СРАЗУ ВЫВЕСТИ JSON ДЛЯ COPY-PASTE (Hysteria2 оставить как сейчас)\n'
   printf '  2) СГЕНЕРИРОВАТЬ И ВЫВЕСТИ JSON + заново выбрать Hysteria2\n'
-  printf '  3) Показать точные значения Host для Remnawave (включая private REALITY SNI)\n'
+  printf '  3) Показать точные значения Host для Remnawave (включая camouflage SNI)\n'
   printf '  4) Повторно вывести полный Config Profile JSON\n'
   printf '  5) Показать injectHosts-фрагмент для существующего External XRAY_JSON\n'
-  printf '  6) Проверить сайт и private REALITY-маршрут\n'
+  printf '  6) Проверить сайт и REALITY-маршрут\n'
+  printf '  7) Управление REALITY camouflage SNI: проверить / сменить / задать вручную\n'
   printf '  0) Назад\n\nВыбор [0]: '
   local choice; read -r choice; choice=${choice:-0}
   case "$choice" in
@@ -153,6 +177,7 @@ run_profile_manager(){
     4) [[ -r "$APP_DIR/config-profile.json" ]] && { echo '#################### НАЧАЛО ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'; cat "$APP_DIR/config-profile.json"; echo '#################### КОНЕЦ ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'; } || warn "Сначала выбери пункт 1 или 2" ;;
     5) [[ -r "$APP_DIR/external-json-inject-snippet.json" ]] && cat "$APP_DIR/external-json-inject-snippet.json" || warn "Сначала выбери пункт 1 или 2" ;;
     6) run_selfsteal_test ;;
+    7) run_reality_camouflage_manager ;;
     0) return ;;
     *) warn "Неизвестный пункт" ;;
   esac
@@ -215,9 +240,9 @@ run_selfsteal_test(){
   if [[ -n "$sni" ]]; then
     reality_code="$(curl -ksS --resolve "$sni:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$sni/" 2>/dev/null || true)"
     if [[ "$reality_code" =~ ^[23][0-9][0-9]$ ]]; then
-      ok "private REALITY route -> Xray/fallback отвечает HTTP $reality_code"
+      ok "REALITY camouflage route -> Xray/fallback отвечает HTTP $reality_code"
     else
-      warn "private REALITY route пока не подтвержден (${reality_code:-000}). После назначения нового профиля rw-core должен слушать 127.0.0.1:10443."
+      warn "REALITY camouflage route пока не подтвержден (${reality_code:-000}). После назначения профиля rw-core должен слушать 127.0.0.1:10443."
     fi
   fi
   echo '#################### КОНЕЦ ВЫВОДА: SELFSTEAL TEST ####################'
@@ -228,7 +253,7 @@ show_status(){
   echo '#################### НАЧАЛО ВЫВОДА: NODE STATUS ####################'
   printf 'Domain: %s\n' "$(node_domain)"
   printf 'Local Config Profile: '; if profile_exists; then echo 'CREATED (назначение в панели отдельно)'; else echo 'NOT CREATED'; fi
-  printf 'REALITY route: '; if [[ -s "$APP_DIR/.reality_sni" ]]; then echo 'PRIVATE / CONFIGURED'; else echo 'NOT CREATED'; fi
+  printf 'REALITY camouflage: '; if [[ -s "$APP_DIR/.reality_sni" ]]; then echo 'CONFIGURED / SNI HIDDEN'; else echo 'NOT CREATED'; fi
   printf 'Hysteria2: '; if [[ "$(hysteria_state)" == 1 ]]; then echo 'ENABLED'; else echo 'DISABLED'; fi
   printf '\nContainers:\n'; docker ps --filter name=remnanode --filter name=remnawave-nginx --format '  {{.Names}}\t{{.Status}}' 2>/dev/null || true
   printf '\nListeners:\n'; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:10443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
