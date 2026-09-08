@@ -17,9 +17,21 @@ jobs:
           bash -n setup_node.sh
           bash -n setup_node_next.sh
           bash -n production/remnawave-transport-manager.sh
+          bash -n production/xhttp-signature-manager.sh
           bash -n production/rkn-watcher-manager.sh
 
-      - name: Generate XHTTP external-SNI profile
+      - name: Install pinned Xray v26.7.28
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' \
+            https://github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip \
+            -o /tmp/xray.zip
+          echo '8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40  /tmp/xray.zip' | sha256sum -c -
+          unzip -q /tmp/xray.zip -d /tmp/xray-bin
+          sudo install -m 0755 /tmp/xray-bin/xray /usr/local/bin/xray
+          xray version
+
+      - name: Generate and validate XHTTP external-SNI profile
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -28,22 +40,20 @@ jobs:
           printf 'node.example.com\n' > "$T/.node_domain"
           printf 'www.microsoft.com\n' > "$T/.reality_sni"
           printf 'www.microsoft.com:443\n' > "$T/.reality_target"
-          cat > "$T/reality.env" <<'EOF'
-          REALITY_PRIVATE_KEY=test-private-key
-          REALITY_PUBLIC_KEY=test-public-key
-          REALITY_SHORT_ID=0123456789abcdef
-          REALITY_SERVER_NAME=www.microsoft.com
-          REALITY_TARGET=www.microsoft.com:443
-          EOF
-          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target" "$T/reality.env"
+          chmod 644 "$T/.node_domain" "$T/.reality_sni" "$T/.reality_target"
 
-          sudo env APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=external SNI_MODE=keep bash production/remnawave-transport-manager.sh xhttp >/tmp/xhttp.out
+          sudo env APP_DIR="$T" bash production/xhttp-signature-manager.sh >/tmp/xhttp-signature.out
+
           sudo jq empty "$T/remnawave-profiles/xhttp-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.network == "xhttp"' "$T/remnawave-profiles/xhttp-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/xhttp-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e '.inbounds[0].streamSettings.xhttpSettings.extra.sessionIDTable == "Base62"' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo jq -e --slurpfile e "$T/remnawave-profiles/host-xhttp-extra.json" '.inbounds[0].streamSettings.xhttpSettings.extra == $e[0]' "$T/remnawave-profiles/xhttp-reality.json"
+          sudo xray run -test -c "$T/remnawave-profiles/xhttp-reality.json"
 
-      - name: Generate RAW SelfSteal profile
+      - name: Generate and validate RAW SelfSteal profile
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -52,35 +62,37 @@ jobs:
           printf 'node.example.com\n' > "$T/.node_domain"
           printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
           printf 'dummy-key\n' > "$T/certs/privkey.pem"
-          cat > "$T/reality.env" <<'EOF'
-          REALITY_PRIVATE_KEY=test-private-key
-          REALITY_PUBLIC_KEY=test-public-key
-          REALITY_SHORT_ID=0123456789abcdef
-          EOF
-          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/reality.env"
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem"
 
-          sudo env APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
+          sudo env PATH="$PATH" APP_DIR="$T" CAMOUFLAGE_MODE=selfsteal bash production/remnawave-transport-manager.sh raw >/tmp/raw.out
           sudo jq empty "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.network == "raw"' "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.security == "reality"' "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.realitySettings.target == "/dev/shm/nginx.sock"' "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.realitySettings.xver == 1' "$T/remnawave-profiles/raw-reality.json"
           sudo jq -e '.inbounds[0].streamSettings.realitySettings.serverNames == ["node.example.com"]' "$T/remnawave-profiles/raw-reality.json"
+          sudo grep -q '^Flow: пусто$' "$T/remnawave-profiles/host-raw.txt"
+          sudo xray run -test -c "$T/remnawave-profiles/raw-reality.json"
 
-      - name: Generate Hysteria2 profile
+      - name: Generate and validate Hysteria2 profile
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/certs" "$T/www"
           chmod 755 "$T" "$T/certs" "$T/www"
           printf 'node.example.com\n' > "$T/.node_domain"
-          printf 'dummy-cert\n' > "$T/certs/fullchain.pem"
-          printf 'dummy-key\n' > "$T/certs/privkey.pem"
           printf '<html><body>selfsteal</body></html>\n' > "$T/www/index.html"
-          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/certs/privkey.pem" "$T/www/index.html"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=node.example.com' \
+            -keyout "$T/certs/privkey.pem" -out "$T/certs/fullchain.pem" >/dev/null 2>&1
+          sudo mkdir -p /etc/xray/certs
+          sudo cp "$T/certs/fullchain.pem" /etc/xray/certs/fullchain.pem
+          sudo cp "$T/certs/privkey.pem" /etc/xray/certs/privkey.pem
+          chmod 644 "$T/.node_domain" "$T/certs/fullchain.pem" "$T/www/index.html"
 
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/remnawave-transport-manager.sh hysteria >/tmp/hysteria.out
           sudo jq empty "$T/remnawave-profiles/hysteria2-tls.json"
           sudo jq -e '.inbounds[0].protocol == "hysteria"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo jq -e '.inbounds[0].streamSettings.security == "tls"' "$T/remnawave-profiles/hysteria2-tls.json"
           sudo jq -e '.inbounds[0].streamSettings.hysteriaSettings.masquerade.type == "string"' "$T/remnawave-profiles/hysteria2-tls.json"
+          sudo xray run -test -c "$T/remnawave-profiles/hysteria2-tls.json"
