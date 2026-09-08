@@ -13,6 +13,8 @@ NGINX_MAIN_CONF="$APP_DIR/nginx-main.conf"
 OVERRIDE_FILE="$APP_DIR/docker-compose.override.yml"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
 REALITY_TARGET_FILE="$APP_DIR/.reality_target"
+REALITY_ROUTE_VERSION_FILE="$APP_DIR/.reality_route_version"
+REALITY_ROUTE_VERSION="2"
 REALITY_SNI_MODE="${REALITY_SNI_MODE:-keep}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.28}"
 
@@ -50,7 +52,7 @@ host_has_public_ip(){
 }
 
 probe_reality_target(){
-  local host="$1" tls tmp
+  local host="$1" tmp
   [[ "$host" != "$NODE_DOMAIN" ]] || return 1
   host_has_public_ip "$host" || return 1
 
@@ -60,24 +62,20 @@ probe_reality_target(){
     return 1
   fi
 
-  # Сертификат target обязан быть валиден именно для выбранного serverName.
   if ! openssl x509 -in "$tmp" -noout -checkhost "$host" >/dev/null 2>&1; then
     rm -f "$tmp"
     return 1
   fi
-
-  # Предпочитаем современные HTTPS-цели, которые реально говорят TLS 1.3.
-  tls="$(openssl x509 -in "$tmp" -noout -subject 2>/dev/null || true)"
   rm -f "$tmp"
-  [[ -n "$tls" ]]
+  return 0
 }
 
 choose_auto_camouflage(){
   local candidates=(
     www.microsoft.com
+    www.cloudflare.com
     www.apple.com
     www.amazon.com
-    www.cloudflare.com
     www.samsung.com
     www.yahoo.com
     www.bing.com
@@ -98,6 +96,8 @@ choose_auto_camouflage(){
 resolve_reality_route(){
   REALITY_SNI="${REALITY_SNI:-}"
   REALITY_TARGET="${REALITY_TARGET:-}"
+  local saved_version=""
+  [[ -r "$REALITY_ROUTE_VERSION_FILE" ]] && saved_version="$(tr -d '[:space:]' < "$REALITY_ROUTE_VERSION_FILE")"
 
   case "$REALITY_SNI_MODE" in
     rotate)
@@ -113,9 +113,11 @@ resolve_reality_route(){
       probe_reality_target "$REALITY_SNI" || fail "SNI $REALITY_SNI не прошел проверку: нужен публичный HTTPS target с TLS1.3 и валидным сертификатом"
       ;;
     keep|auto)
-      if [[ "$REALITY_SNI_MODE" == keep ]]; then
+      if [[ "$REALITY_SNI_MODE" == keep && "$saved_version" == "$REALITY_ROUTE_VERSION" ]]; then
         [[ -z "$REALITY_SNI" && -r "$REALITY_SNI_FILE" ]] && REALITY_SNI="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
         [[ -z "$REALITY_TARGET" && -r "$REALITY_TARGET_FILE" ]] && REALITY_TARGET="$(tr -d '[:space:]' < "$REALITY_TARGET_FILE")"
+      elif [[ "$REALITY_SNI_MODE" == keep && -n "$saved_version" && "$saved_version" != "$REALITY_ROUTE_VERSION" ]]; then
+        warn "Формат REALITY camouflage route обновлен: подбираю target заново один раз"
       fi
       ;;
     *) fail "REALITY_SNI_MODE должен быть keep/auto/rotate/manual" ;;
@@ -138,7 +140,8 @@ resolve_reality_route(){
 
   printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
   printf '%s\n' "$REALITY_TARGET" > "$REALITY_TARGET_FILE"
-  chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE"
+  printf '%s\n' "$REALITY_ROUTE_VERSION" > "$REALITY_ROUTE_VERSION_FILE"
+  chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE" "$REALITY_ROUTE_VERSION_FILE"
 }
 
 check_files(){
