@@ -32,12 +32,12 @@ jobs:
           grep -q 'SelfSteal сайт — STREAM / RADIO' setup_node_next.sh
           grep -q 'SelfSteal default STREAM and RADIO' .github/workflows/transport-profile-ci.yml
 
-      - name: Commit wiring
+      - name: Commit wrapper and manifest
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add setup_node_next.sh production/modules.sha256 .github/workflows/transport-profile-ci.yml
+          git add setup_node_next.sh production/modules.sha256
           if git diff --cached --quiet; then
             echo 'No wiring changes required.'
           else
