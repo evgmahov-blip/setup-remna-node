@@ -8,6 +8,7 @@ PROFILE_FILE="${PROFILE_FILE:-$APP_DIR/config-profile.json}"
 PROFILE_PUBLIC_FILE="${PROFILE_PUBLIC_FILE:-$APP_DIR/config-profile-public.txt}"
 READY_FILE="${READY_FILE:-$APP_DIR/remnawave-ready.txt}"
 EXTERNAL_SNIPPET_FILE="${EXTERNAL_SNIPPET_FILE:-$APP_DIR/external-json-inject-snippet.json}"
+MAPPER_FILE="${MAPPER_FILE:-$APP_DIR/remnawave-host-mapper.json}"
 REALITY_ENV="${REALITY_ENV:-$APP_DIR/reality.env}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
 XHTTP_PATH_FILE="$APP_DIR/.xhttp_path"
@@ -217,18 +218,7 @@ EOF
         },
         "xhttpSettings": {
           "mode": "packet-up",
-          "path": "$XHTTP_PATH",
-          "extra": {
-            "mode": "packet-up",
-            "path": "$XHTTP_PATH",
-            "xmux": {"maxConcurrency": "1"},
-            "seqKey": "chunk_id",
-            "sessionKey": "auth",
-            "sessionIDKey": "auth",
-            "scMaxConcurrentPosts": 10,
-            "scMinPostsIntervalMs": 5,
-            "serverMaxHeaderBytes": 32768
-          }
+          "path": "$XHTTP_PATH"
         }
       }
     }$hysteria_block
@@ -270,6 +260,34 @@ EOF
   chmod 600 "$EXTERNAL_SNIPPET_FILE"
 }
 
+write_optional_mapper(){
+  cat > "$MAPPER_FILE" <<EOF
+{
+  "xrayJson": [
+    {
+      "op": "set",
+      "value": "reality",
+      "to": "streamSettings.security"
+    },
+    {
+      "op": "set",
+      "value": {
+        "serverName": "$REALITY_SNI",
+        "publicKey": "$REALITY_PUBLIC_KEY",
+        "shortId": "$REALITY_SHORT_ID",
+        "fingerprint": "firefox"
+      },
+      "to": "streamSettings.realitySettings"
+    }
+  ],
+  "mihomo": [],
+  "base64": []
+}
+EOF
+  chmod 600 "$MAPPER_FILE"
+  jq empty "$MAPPER_FILE" || fail "Сгенерированный Mapper невалидный JSON"
+}
+
 write_summaries(){
   cat > "$READY_FILE" <<EOF
 REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
@@ -296,10 +314,24 @@ REMNAWAVE — ЧТО СОЗДАТЬ В ПАНЕЛИ
 
 ВАЖНО: в Host НЕ выбирай Security Layer = TLS.
 Inbound уже имеет streamSettings.security = reality, поэтому Host должен наследовать REALITY из inbound.
-Если принудительно выбрать TLS, Remnawave сгенерирует TLS-клиента вместо REALITY, и соединение через nginx -> Xray не пройдет.
 Public Key и Short ID также наследуются из realitySettings выбранного inbound:
    Public key:      $REALITY_PUBLIC_KEY
    Short ID:        $REALITY_SHORT_ID
+
+XHTTP СЕЙЧАС НАМЕРЕННО МИНИМАЛЬНЫЙ
+----------------------------------
+В серверном Config Profile остаются только:
+  mode: packet-up
+  path: $XHTTP_PATH
+
+Поля extra/xmux/sessionKey/sessionIDKey/scMaxConcurrentPosts/scMinPostsIntervalMs удалены,
+чтобы не создавать лишнюю зависимость от конкретной версии Xray-клиента.
+
+OPTIONAL HOST MAPPER
+--------------------
+Mapper НЕ нужен в штатной конфигурации, если Remnawave уже выдает security=reality + publicKey + shortId.
+Он сохранен только как аварийный/диагностический вариант:
+  $MAPPER_FILE
 
 ВАЖНО ПО REALITY CAMOUFLAGE
 ---------------------------
@@ -338,9 +370,11 @@ Public site: https://$NODE_DOMAIN/
 XHTTP public: $NODE_DOMAIN:$PUBLIC_TCP_PORT/TCP
 XHTTP internal inbound: 127.0.0.1:$XRAY_TCP_PORT
 REALITY camouflage route: CONFIGURED (use Host-values menu to reveal SNI)
+XHTTP mode: packet-up (minimal profile, no extra/xmux/session overrides)
 XHTTP path: $XHTTP_PATH
 Host Remark: $HOST_REMARK
 Host Security Layer: DEFAULT (inherit REALITY)
+Optional Host Mapper: $MAPPER_FILE
 Hysteria2: $ENABLE_HYSTERIA2
 EOF
   chmod 600 "$PROFILE_PUBLIC_FILE"
@@ -377,6 +411,7 @@ main(){
   check_hysteria
   write_profile
   write_external_snippet
+  write_optional_mapper
   write_summaries
   configure_firewall
   show_result
