@@ -1,1 +1,90 @@
-Проверь ветку fix/xhttp-raw-hysteria-from-july7 репозитория evgmahov-blip/setup-remna-node как production code review перед тестом на живой Remnawave node. Сначала прочитай REVIEW_CLAUDE.md и NEXT_BRANCH_NOTES.md, затем проверь setup_node_next.sh, production/remnawave-transport-manager.sh, production/rkn-watcher-manager.sh и .github/workflows/transport-profile-ci.yml. Главный инвариант: не менять рабочую архитектуру 7 июля — public TCP/443 должен принадлежать Xray/rw-core, nginx остаётся SelfSteal backend через /dev/shm/nginx.sock; запрещено возвращать nginx stream/ssl_preread перед Xray. Проверь текущую совместимость JSON с актуальным Xray-core и Remnawave: XHTTP+REALITY, RAW+REALITY, Hysteria2+TLS, target Unix socket, xver=1/proxy_protocol, serverNames/SNI, users injection, Host hints, UDP/TCP 443 coexistence. Отдельно проверь безопасность SNI pool и RKN Watcher, shell quoting, race conditions, rollback и риск SSH lockout. Ответ дай группами BLOCKER/HIGH/MEDIUM/LOW/VERIFIED OK. Для каждого BLOCKER/HIGH укажи точный файл/функцию/поле и минимальный патч без перестройки архитектуры.
+ROUND 2 PRODUCTION REVIEW — PR #2
+
+Репозиторий: evgmahov-blip/setup-remna-node
+PR: https://github.com/evgmahov-blip/setup-remna-node/pull/2
+Ветка: fix/xhttp-raw-hysteria-from-july7
+Baseline 07.07: 34aeaa99aa1a5c21fc4f9d0c976d38607d025353
+Текущий проверяемый HEAD перед этим review: d850a738590c8895c533e67ec2694ac5887d5bb3
+
+Это второй production review. Сначала прочитай REVIEW_CLAUDE.md и NEXT_BRANCH_NOTES.md, затем проверь именно текущие версии:
+- setup_node_next.sh
+- production/remnawave-transport-manager.sh
+- production/xhttp-signature-manager.sh
+- production/rkn-watcher-manager.sh
+- production/validate-generated-profile.sh
+- .github/workflows/transport-profile-ci.yml
+- при необходимости сравни с setup_node.sh из baseline 34aeaa99...
+
+НЕ ПЕРЕСТРАИВАТЬ АРХИТЕКТУРУ. Инвариант 7 июля обязателен:
+- public TCP/443 принадлежит Xray/rw-core;
+- nginx НЕ стоит перед Xray;
+- SelfSteal backend: Xray REALITY -> /dev/shm/nginx.sock -> nginx;
+- для SelfSteal ожидаются target=/dev/shm/nginx.sock, xver=1 и nginx proxy_protocol;
+- не предлагать nginx stream/ssl_preread mux перед Xray;
+- Hysteria2 может использовать UDP/443 параллельно с Xray TCP/443.
+
+Что изменилось после первого review:
+1. CI теперь ставит официальный Xray-core v26.7.28, проверяет SHA256 архива и запускает `xray run -test -c` на сгенерированных XHTTP, RAW и Hysteria2 профилях.
+2. CI run #32 GREEN: XHTTP external-SNI, RAW SelfSteal и Hysteria2 все проходят реальный Xray `run -test`.
+3. В XHTTP добавлен production/xhttp-signature-manager.sh: per-node стабильная сигнатура, один и тот же `extra` копируется в inbound и отдельный Host extra JSON; сигнатура не должна рандомизироваться на каждом запуске.
+4. Реальный Xray обнаружил ошибку: `xmux.maxConnections` нельзя одновременно с `maxConcurrency`; maxConnections удалён.
+5. SNI pool source reality-probe запинен на immutable upstream commit c85e2950ea73f01639aa6243732b3622ed1bdbf5.
+6. RKN safe_apply усилен: SSH IP и Panel IP сверяются с whitelist/CIDR; при непроверенном IP обычный APPLY не должен проходить без отдельного UNSAFE-APPLY.
+7. Генерация profile JSON переведена на temp + validation + atomic install, чтобы не оставлять обрезанный профиль.
+8. Для RAW Host явно указано flow пусто.
+9. July baseline подтверждает общий /dev/shm bind для remnanode и nginx и nginx listen на unix:/dev/shm/nginx.sock ssl proxy_protocol.
+
+ВАЖНО: GREEN CI означает только, что Xray v26.7.28 принимает schema/config. Это НЕ считать доказательством полной совместимости с Remnawave Panel/Host/client generation или live dataplane.
+
+Нужен особенно жёсткий review следующих оставшихся зон:
+
+A. SUPPLY CHAIN / BOOTSTRAP
+`setup_node_next.sh` всё ещё тянет новые root-модули с изменяемой ветки через MODULE_BRANCH. Это известный оставшийся blocker. Предложи минимальный и реально поддерживаемый вариант pinning/update flow без chicken-and-egg проблемы "скрипт должен содержать SHA собственного будущего коммита". Рассмотри immutable commit/tag/release + embedded checksums/manifest, но не усложняй без необходимости. Укажи точный патч.
+
+B. HYSTERIA2 НА НОДЕ, УСТАНОВЛЕННОЙ JULY-BASELINE КАК REALITY
+В baseline compose cert bind `$CERTS_DIR:/etc/xray/certs:ro` добавляется условно для tls/xhttp и может отсутствовать на reality-only ноде. Сгенерированный Hysteria2 config использует `/etc/xray/certs/fullchain.pem` и `privkey.pem`. Проверь реальный риск и предложи минимальный idempotent runtime-precheck/prepare: cert mount, docker compose validation/recreate implications, UDP/443/UFW, без нарушения TCP/443 и SelfSteal. Отдельно укажи, можно ли сделать это без заметного downtime.
+
+C. REMNAWAVE COMPATIBILITY
+Проверь не только Xray syntax, но ожидаемую структуру Remnawave Config Profile и Host:
+- clients/users должны инжектиться Remnawave корректно при пустых arrays;
+- `protocol: hysteria`, `network: hysteria`, `hysteriaSettings` и TLS paths;
+- XHTTP `extra`: какие поля реально должны находиться в inbound, какие в Host, и в каком типе Host ожидает extra (JSON object/string);
+- path/SNI/publicKey/shortId/flow/fingerprint hints;
+- не протекает ли REALITY privateKey в Host/subscription;
+- может ли один Config Profile безопасно содержать одновременно TCP XHTTP/RAW и UDP Hysteria2, или лучше оставить отдельные профили. Если multi-inbound разумен — предложи минимальную схему, но не считать обязательной.
+
+D. XHTTP SIGNATURE SEMANTICS
+Проверь текущие значения `sessionKey/sessionIDKey`, `sessionIDTable=Base62`, `sessionIDLength`, padding fields и `xmux` именно против Xray v26.7.28. CI уже принимает JSON, но проверь смысл/взаимную совместимость и отсутствие параметров, которые ухудшают работу. Особенно проверь, что сохранение сигнатуры действительно стабильно и старый несовместимый signature безопасно мигрирует.
+
+E. REALITY / SELFSTEAL
+Сверь `target`, `serverNames`, `shortIds`, `xver`, Unix socket и proxy_protocol между новым генератором и July nginx. Ищи ситуации, когда external-SNI state может случайно попасть в SelfSteal или наоборот. Проверь, не перезаписываются ли рабочие Reality keys/SNI при повторном запуске.
+
+F. RKN WATCHER
+Перепроверь новый whitelist/CIDR guard: IPv4/IPv6, JSON parsing, пустой SSH_CLIENT, Panel IP, malformed whitelist, ошибочный false-positive. Лучше fail-safe, чем false-safe. Не допускай автоматического firewall apply.
+
+G. ATOMICITY / ROLLBACK / FAILURE MODES
+Ctrl+C/OOM/curl failure/docker failure, права файлов, umask, временные файлы, повторный запуск, частично созданное состояние. Ищи ситуации, где генератор говорит OK, а реально профиль/Host/state расходятся.
+
+H. VALIDATOR / CI
+Проверь, что `validate-generated-profile.sh` реально валидирует тем бинарником rw-core/Xray, который используется нодой, и не даёт ложного OK. Проверь CI на ложноположительные тесты и пропущенные ветки SelfSteal XHTTP / external RAW / Hysteria cert mount.
+
+Формат ответа:
+- BLOCKER
+- HIGH
+- MEDIUM
+- LOW
+- VERIFIED OK
+
+Для каждого BLOCKER/HIGH:
+- точный файл + функция/поле;
+- почему это реально ломает production или создаёт риск;
+- минимальный patch/diff или конкретная замена строк;
+- как проверить фикс автоматически и на тестовой ноде.
+
+Не повторяй исправленные замечания из первого review, если они действительно исправлены. Если считаешь старое замечание всё ещё актуальным — покажи конкретно почему по текущему HEAD.
+
+В конце дай короткий verdict по четырём пунктам:
+1. XHTTP+REALITY готов/не готов к live test;
+2. RAW+REALITY SelfSteal готов/не готов к live test;
+3. Hysteria2+TLS готов/не готов к live test;
+4. можно ли после исправления BLOCKER/HIGH делать controlled test на одной ноде, НЕ merge в custom.
