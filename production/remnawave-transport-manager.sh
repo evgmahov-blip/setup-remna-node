@@ -4,8 +4,10 @@ IFS=$'\n\t'
 
 APP_DIR="${APP_DIR:-/opt/remnanode}"
 CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
+WWW_DIR="${WWW_DIR:-/var/www/html}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
 TRANSPORT_FILE="$APP_DIR/.transport"
+CAMOUFLAGE_FILE="$APP_DIR/.camouflage_mode"
 REALITY_ENV="$APP_DIR/reality.env"
 REALITY_SNI_FILE="$APP_DIR/.reality_sni"
 REALITY_TARGET_FILE="$APP_DIR/.reality_target"
@@ -14,6 +16,7 @@ SNI_POOL_CACHE="$APP_DIR/reality-targets.cache"
 SNI_POOL_SOURCE="https://raw.githubusercontent.com/evkir/reality-probe/main/reality_probe.py"
 PROFILE_DIR="$APP_DIR/remnawave-profiles"
 PUBLIC_PORT="${PUBLIC_PORT:-443}"
+SELFSTEAL_SOCKET="${SELFSTEAL_SOCKET:-/dev/shm/nginx.sock}"
 
 mkdir -p "$APP_DIR" "$PROFILE_DIR"
 
@@ -87,26 +90,34 @@ check_sni(){
     openssl x509 -noout -checkhost "$sni" >/dev/null 2>&1
 }
 
-select_sni(){
-  local current="" sni
+select_external_sni(){
+  local current="" sni choice="${SNI_MODE:-}"
   [[ -r "$REALITY_SNI_FILE" ]] && current="$(tr -d '[:space:]' < "$REALITY_SNI_FILE")"
 
-  echo
-  echo 'REALITY SNI:'
-  [[ -n "$current" ]] && echo "  Текущий: $current"
-  echo '  1) Оставить текущий'
-  echo '  2) Выбрать автоматически из проверяемого списка'
-  echo '  3) Указать вручную'
-  echo '  4) Только обновить список SNI (текущий НЕ менять)'
-  read -r -p 'Выбор [1]: ' choice
-  choice="${choice:-1}"
+  if [[ -z "$choice" ]]; then
+    echo
+    echo 'ВНЕШНИЙ REALITY SNI:'
+    [[ -n "$current" ]] && echo "  Текущий: $current"
+    echo '  1) Оставить текущий'
+    echo '  2) Выбрать автоматически из проверяемого списка'
+    echo '  3) Указать вручную'
+    echo '  4) Только обновить список SNI (текущий НЕ менять)'
+    read -r -p 'Выбор [1]: ' choice
+    choice="${choice:-1}"
+  fi
 
   case "$choice" in
-    1)
-      [[ -n "$current" ]] || { refresh_sni_pool; choice=2; }
+    1|keep)
+      if [[ -z "$current" || "$current" == "$(node_domain)" ]]; then
+        choice="2"
+      fi
       ;;
-    2)
+  esac
+
+  case "$choice" in
+    2|auto)
       refresh_sni_pool
+      current=""
       while IFS= read -r sni; do
         [[ -n "$sni" ]] || continue
         if check_sni "$sni"; then
@@ -116,23 +127,59 @@ select_sni(){
       done < <(shuf "$SNI_POOL_CACHE")
       [[ -n "$current" ]] || fail "Не найден рабочий SNI"
       ;;
-    3)
-      read -r -p 'SNI: ' sni
+    3|manual)
+      sni="${REALITY_SNI_INPUT:-}"
+      [[ -n "$sni" ]] || read -r -p 'SNI: ' sni
       check_sni "$sni" || fail "SNI не прошёл TLS1.3/cert проверку: $sni"
       current="$sni"
       ;;
-    4)
+    4|refresh)
       refresh_sni_pool
-      [[ -n "$current" ]] || fail "Текущий SNI ещё не задан"
+      [[ -n "$current" && "$current" != "$(node_domain)" ]] || fail "Текущий внешний SNI ещё не задан"
       ;;
-    *) fail "Неизвестный выбор" ;;
+    1|keep) ;;
+    *) fail "Неизвестный выбор SNI" ;;
   esac
 
-  printf '%s\n' "$current" > "$REALITY_SNI_FILE"
-  printf '%s:443\n' "$current" > "$REALITY_TARGET_FILE"
-  chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE"
   REALITY_SNI="$current"
   REALITY_TARGET="$current:443"
+  REALITY_XVER=0
+  CAMOUFLAGE_MODE="external"
+  printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
+  printf '%s\n' "$REALITY_TARGET" > "$REALITY_TARGET_FILE"
+  printf '%s\n' "$CAMOUFLAGE_MODE" > "$CAMOUFLAGE_FILE"
+  chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE" "$CAMOUFLAGE_FILE"
+}
+
+select_camouflage(){
+  local mode="${CAMOUFLAGE_MODE:-}"
+  if [[ -z "$mode" ]]; then
+    echo
+    echo 'Маскировка REALITY:'
+    echo '  1) SelfSteal — старая рабочая архитектура: Xray :443 -> /dev/shm/nginx.sock'
+    echo '  2) Внешний SNI — target крупного HTTPS-сайта из проверяемого пула'
+    read -r -p 'Выбор [1]: ' c
+    case "${c:-1}" in 1) mode=selfsteal ;; 2) mode=external ;; *) fail "Неверный режим маскировки" ;; esac
+  fi
+
+  case "$mode" in
+    selfsteal)
+      [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || fail "SelfSteal требует SSL сертификат ноды в $CERTS_DIR"
+      REALITY_SNI="$(node_domain)"
+      REALITY_TARGET="$SELFSTEAL_SOCKET"
+      REALITY_XVER=1
+      CAMOUFLAGE_MODE="selfsteal"
+      printf '%s\n' "$REALITY_SNI" > "$REALITY_SNI_FILE"
+      printf '%s\n' "$REALITY_TARGET" > "$REALITY_TARGET_FILE"
+      printf '%s\n' "$CAMOUFLAGE_MODE" > "$CAMOUFLAGE_FILE"
+      chmod 600 "$REALITY_SNI_FILE" "$REALITY_TARGET_FILE" "$CAMOUFLAGE_FILE"
+      log "[OK] SelfSteal: SNI=$REALITY_SNI target=$REALITY_TARGET xver=$REALITY_XVER"
+      ;;
+    external)
+      select_external_sni
+      ;;
+    *) fail "CAMOUFLAGE_MODE должен быть selfsteal или external" ;;
+  esac
 }
 
 generate_reality_keys(){
@@ -162,6 +209,8 @@ REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY
 REALITY_SHORT_ID=$REALITY_SHORT_ID
 REALITY_SERVER_NAME=$REALITY_SNI
 REALITY_TARGET=$REALITY_TARGET
+REALITY_XVER=$REALITY_XVER
+CAMOUFLAGE_MODE=$CAMOUFLAGE_MODE
 EOF
 }
 
@@ -225,7 +274,7 @@ write_xhttp_profile(){
         "realitySettings": {
           "show": false,
           "target": "$REALITY_TARGET",
-          "xver": 0,
+          "xver": $REALITY_XVER,
           "serverNames": ["$REALITY_SNI"],
           "privateKey": "$REALITY_PRIVATE_KEY",
           "shortIds": ["$REALITY_SHORT_ID"]
@@ -259,7 +308,7 @@ write_raw_profile(){
         "realitySettings": {
           "show": false,
           "target": "$REALITY_TARGET",
-          "xver": 0,
+          "xver": $REALITY_XVER,
           "serverNames": ["$REALITY_SNI"],
           "privateKey": "$REALITY_PRIVATE_KEY",
           "shortIds": ["$REALITY_SHORT_ID"]
@@ -273,9 +322,18 @@ EOF
   jq empty "$f"
 }
 
+hysteria_masquerade_json(){
+  if [[ -s "$WWW_DIR/index.html" ]]; then
+    jq -Rs '{type:"string",content:.,headers:{"content-type":"text/html; charset=utf-8"},statusCode:200}' < "$WWW_DIR/index.html"
+  else
+    printf '%s\n' '{"type":"string","content":"<!doctype html><html><body><h1>Welcome</h1></body></html>","headers":{"content-type":"text/html; charset=utf-8"},"statusCode":200}'
+  fi
+}
+
 write_hysteria_profile(){
-  local f="$PROFILE_DIR/hysteria2-tls.json"
+  local f="$PROFILE_DIR/hysteria2-tls.json" masq
   [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || fail "Для Hysteria2 нужны $CERTS_DIR/fullchain.pem и privkey.pem"
+  masq="$(hysteria_masquerade_json)"
   {
     base_profile_prefix
     cat <<EOF
@@ -291,12 +349,7 @@ write_hysteria_profile(){
         "hysteriaSettings": {
           "version": 2,
           "udpIdleTimeout": 60,
-          "masquerade": {
-            "type": "proxy",
-            "url": "https://$(node_domain)/",
-            "rewriteHost": true,
-            "insecure": false
-          }
+          "masquerade": $masq
         },
         "tlsSettings": {
           "serverName": "$(node_domain)",
@@ -331,6 +384,8 @@ Host: пусто
 Path: $XHTTP_PATH
 Public key: $REALITY_PUBLIC_KEY
 Short ID: $REALITY_SHORT_ID
+Camouflage: $CAMOUFLAGE_MODE
+Reality target: $REALITY_TARGET
 EOF
       ;;
     raw)
@@ -346,6 +401,8 @@ Host: пусто
 Path: пусто
 Public key: $REALITY_PUBLIC_KEY
 Short ID: $REALITY_SHORT_ID
+Camouflage: $CAMOUFLAGE_MODE
+Reality target: $REALITY_TARGET
 EOF
       ;;
     hysteria)
@@ -357,6 +414,7 @@ Port: $PUBLIC_PORT/UDP
 Security Layer: DEFAULT
 SNI: $d
 ALPN: h3
+Masquerade: встроенная копия текущего SelfSteal index.html
 EOF
       ;;
   esac
@@ -366,13 +424,13 @@ generate_transport(){
   local transport="$1"
   case "$transport" in
     xhttp)
-      select_sni
+      select_camouflage
       generate_reality_keys
       write_xhttp_profile
       write_host_values xhttp
       ;;
     raw)
-      select_sni
+      select_camouflage
       generate_reality_keys
       write_raw_profile
       write_host_values raw
