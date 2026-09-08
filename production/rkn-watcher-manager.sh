@@ -11,7 +11,7 @@ RKN_FILES=(installer.sh rkn-watcher.sh config_tool.py geoip_apply.py SHA256SUMS 
 
 say(){ printf '%s\n' "$*"; }
 err(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
-need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || err 'Запусти от root'; }
+need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || { err 'Запусти от root'; return 1; }; }
 
 fetch_upstream(){
   local tmp file
@@ -20,14 +20,14 @@ fetch_upstream(){
 
   for file in "${RKN_FILES[@]}"; do
     curl -fsSL --proto '=https' --connect-timeout 10 --max-time 60 \
-      "$RKN_RAW_BASE/$file" -o "$tmp/$file" || err "Не удалось скачать $file"
+      "$RKN_RAW_BASE/$file" -o "$tmp/$file" || { err "Не удалось скачать $file"; return 1; }
   done
 
   (
     cd "$tmp"
     grep -E '  (installer\.sh|rkn-watcher\.sh|config_tool\.py|geoip_apply\.py)$' SHA256SUMS > SHA256SUMS.required
     sha256sum -c SHA256SUMS.required
-  ) || err 'Контрольные суммы RKN Watcher не совпали'
+  ) || { err 'Контрольные суммы RKN Watcher не совпали'; return 1; }
 
   mkdir -p "$RKN_VENDOR_DIR"
   install -m 0755 "$tmp/installer.sh" "$RKN_VENDOR_DIR/installer.sh"
@@ -72,7 +72,27 @@ install_or_update(){
   )
 }
 
+session_ip(){
+  local raw="${SSH_CLIENT:-${SSH_CONNECTION:-}}"
+  printf '%s' "${raw%% *}"
+}
+
+panel_ip(){
+  [[ -r "$APP_DIR/.panel_ip" ]] && tr -d '[:space:]' < "$APP_DIR/.panel_ip"
+}
+
 run_upstream_menu(){
+  local ssh_ip panel answer
+  ssh_ip="$(session_ip)"
+  panel="$(panel_ip)"
+  echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER UPSTREAM MENU WARNING ####################'
+  printf 'Current SSH IP: %s\n' "${ssh_ip:-не найден}"
+  printf 'Panel IP: %s\n' "${panel:-не найден}"
+  echo '[WARN] Оригинальное upstream-меню может применять firewall в обход защитного precheck этого wrapper.'
+  echo '[WARN] Для безопасного APPLY используй пункт 4 нашего меню.'
+  echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER UPSTREAM MENU WARNING ####################'
+  read -r -p 'Открыть upstream-меню? Введите UPSTREAM: ' answer
+  [[ "$answer" == 'UPSTREAM' ]] || { say '[INFO] Отменено'; return 0; }
   fetch_upstream
   (
     cd "$RKN_VENDOR_DIR"
@@ -89,20 +109,15 @@ ip_s, path = sys.argv[1], sys.argv[2]
 try:
     needle = ipaddress.ip_address(ip_s)
     data = json.load(open(path, encoding='utf-8'))
+    values = data.get('ips', []) if isinstance(data, dict) else []
 except Exception:
     raise SystemExit(1)
-
-def walk(v):
-    if isinstance(v, dict):
-        for x in v.values():
-            yield from walk(x)
-    elif isinstance(v, list):
-        for x in v:
-            yield from walk(x)
-    elif isinstance(v, str):
-        yield v.strip()
-
-for value in walk(data):
+if not isinstance(values, list):
+    raise SystemExit(1)
+for raw in values:
+    if not isinstance(raw, str):
+        continue
+    value = raw.strip()
     try:
         if '/' in value:
             if needle in ipaddress.ip_network(value, strict=False):
@@ -115,13 +130,31 @@ raise SystemExit(1)
 PY
 }
 
+whitelist_enabled(){
+  local file="/etc/rkn-watcher/whitelist.json"
+  [[ -r "$file" ]] || return 1
+  python3 - "$file" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding='utf-8'))
+    value = data.get('enabled', False) if isinstance(data, dict) else False
+except Exception:
+    raise SystemExit(1)
+if isinstance(value, bool):
+    raise SystemExit(0 if value else 1)
+if isinstance(value, (int, str)) and str(value).strip().lower() in {'1','true','yes','y','on'}:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 safe_apply(){
-  local panel_ip="" ssh_ip="" answer="" unsafe=0
-  [[ -r "$APP_DIR/.panel_ip" ]] && panel_ip="$(tr -d '[:space:]' < "$APP_DIR/.panel_ip")"
-  ssh_ip="${SSH_CLIENT%% *}"
+  local panel="" ssh_ip="" answer="" unsafe=0
+  panel="$(panel_ip)"
+  ssh_ip="$(session_ip)"
 
   echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER PRECHECK ####################'
-  printf 'Panel IP: %s\n' "${panel_ip:-не найден}"
+  printf 'Panel IP: %s\n' "${panel:-не найден}"
   printf 'Current SSH IP: %s\n' "${ssh_ip:-не найден}"
   printf 'Node control port: %s\n' "$(sed -n 's/^NODE_PORT=//p' "$APP_DIR/.env" 2>/dev/null | head -1 || true)"
   echo
@@ -131,17 +164,30 @@ safe_apply(){
   [[ -r /etc/rkn-watcher/blacklist.json ]] && cat /etc/rkn-watcher/blacklist.json || true
   echo
 
-  if [[ -n "$ssh_ip" ]] && whitelist_contains_ip "$ssh_ip"; then
-    echo "[OK] Текущий SSH IP $ssh_ip найден в whitelist (точно или через CIDR)."
-  else
-    echo "[WARN] Текущий SSH IP ${ssh_ip:-не определён} НЕ подтверждён whitelist.json."
+  if [[ -z "$ssh_ip" ]]; then
+    echo '[WARN] SSH_CLIENT/SSH_CONNECTION не заданы (локальная консоль, cron или сессия без переменных SSH).'
+    echo '[WARN] Безопасность текущей сессии автоматически подтвердить невозможно.'
     unsafe=1
   fi
 
-  if [[ -n "$panel_ip" ]] && whitelist_contains_ip "$panel_ip"; then
-    echo "[OK] IP панели $panel_ip найден в whitelist (точно или через CIDR)."
+  if whitelist_enabled; then
+    echo '[OK] GeoIP whitelist включён.'
   else
-    echo "[WARN] IP панели ${panel_ip:-не определён} НЕ подтверждён whitelist.json."
+    echo '[WARN] GeoIP whitelist не включён или whitelist.json некорректен.'
+    unsafe=1
+  fi
+
+  if [[ -n "$ssh_ip" ]] && whitelist_contains_ip "$ssh_ip"; then
+    echo "[OK] Текущий SSH IP $ssh_ip найден именно в whitelist.ips (точно или CIDR)."
+  else
+    echo "[WARN] Текущий SSH IP ${ssh_ip:-не определён} НЕ подтверждён whitelist.ips."
+    unsafe=1
+  fi
+
+  if [[ -n "$panel" ]] && whitelist_contains_ip "$panel"; then
+    echo "[OK] IP панели $panel найден именно в whitelist.ips (точно или CIDR)."
+  else
+    echo "[WARN] IP панели ${panel:-не определён} НЕ подтверждён whitelist.ips."
     unsafe=1
   fi
 
@@ -182,7 +228,7 @@ main_menu(){
     echo ' RKN WATCHER — управление защитой от сканеров'
     echo '========================================================'
     echo ' 1) Установить / обновить RKN Watcher'
-    echo ' 2) Открыть оригинальное меню RKN Watcher'
+    echo ' 2) Открыть оригинальное меню RKN Watcher (с предупреждением)'
     echo ' 3) Статус'
     echo ' 4) Проверить конфиг и вручную APPLY'
     echo ' 5) Полностью удалить RKN Watcher'
@@ -209,7 +255,7 @@ main(){
     status) show_status ;;
     apply) safe_apply ;;
     uninstall) uninstall_rkn ;;
-    *) err 'Использование: rkn-watcher-manager.sh [menu|install|update|status|apply|uninstall]' ;;
+    *) err 'Использование: rkn-watcher-manager.sh [menu|install|update|status|apply|uninstall]'; return 1 ;;
   esac
 }
 
