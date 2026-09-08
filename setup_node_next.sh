@@ -115,6 +115,10 @@ run_legacy(){
   echo -e "${GRAY}Commit: ${LEGACY_COMMIT}${NC}"
   fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
   if bash "$f"; then
+    echo -e "${GREEN}[NETWORK]${NC} Применяю проверенный NEXT-профиль сети: fq + BBR по умолчанию, если BBR доступен."
+    if ! run_network_tuning; then
+      echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Базовая установка завершена, но сетевой профиль прошёл не все проверки."
+    fi
     if [[ -d /var/www/html && -f "$APP_DIR/docker-compose.yml" ]]; then
       echo -e "${GREEN}[SELFSTEAL]${NC} Применяю сохранённый сайт; если выбор ещё не делали — STREAM."
       run_selfsteal_default
