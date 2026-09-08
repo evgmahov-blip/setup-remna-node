@@ -12,15 +12,7 @@ warn(){ printf '[!] %s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
 require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Запустите от root"; }
 
-KNOWN_CONTAINERS=(
-  remnanode
-  remnawave-nginx
-  remnawave-caddy
-  remna-node
-  remna-proxy
-  telemt
-  telemt-panel
-)
+KNOWN_CONTAINERS=(remnanode remnawave-nginx remnawave-caddy remna-node remna-proxy telemt telemt-panel)
 
 app_dir_has_real_node(){
   [[ -d "$APP_DIR" ]] || return 1
@@ -29,7 +21,7 @@ app_dir_has_real_node(){
   [[ -f "$APP_DIR/.node_domain" ]] && return 0
   [[ -f "$APP_DIR/.protocol" ]] && return 0
   [[ -f "$APP_DIR/nginx.conf" ]] && return 0
-  [[ -d "$APP_DIR/certs" ]] && find "$APP_DIR/certs" -type f -maxdepth 1 -print -quit 2>/dev/null | grep -q . && return 0
+  [[ -d "$APP_DIR/certs" ]] && find "$APP_DIR/certs" -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q . && return 0
   return 1
 }
 
@@ -51,20 +43,13 @@ has_old_stack(){
 show_detected(){
   echo 'Обнаружено перед очисткой:'
   if command -v docker >/dev/null 2>&1; then
-    docker ps -a --format '  container: {{.Names}}  image={{.Image}}  status={{.Status}}' 2>/dev/null \
-      | grep -Ei 'remna|xray|telemt|caddy|nginx' || true
+    docker ps -a --format '  container: {{.Names}}  image={{.Image}}  status={{.Status}}' 2>/dev/null | grep -Ei 'remna|xray|telemt|caddy|nginx' || true
   fi
   app_dir_has_real_node && printf '  node path: %s\n' "$APP_DIR"
-  for p in /opt/remna-node /opt/remnawave-node /opt/telemt "$LOG_DIR"; do
-    [[ -e "$p" ]] && printf '  path: %s\n' "$p"
-  done
-  if [[ -d "$APP_DIR/installer" ]] && ! app_dir_has_real_node; then
-    echo "  installer cache: $APP_DIR/installer (НЕ считается старой нодой)"
-  fi
-  if [[ -e /etc/caddy/Caddyfile ]]; then
-    if grep -qiE 'remna|xray|telemt|/dev/shm/nginx.sock' /etc/caddy/Caddyfile 2>/dev/null; then
-      echo '  caddy: /etc/caddy/Caddyfile содержит Remna/Xray/Telemt-конфигурацию'
-    fi
+  for p in /opt/remna-node /opt/remnawave-node /opt/telemt "$LOG_DIR"; do [[ -e "$p" ]] && printf '  path: %s\n' "$p"; done
+  if [[ -d "$APP_DIR/installer" ]] && ! app_dir_has_real_node; then echo "  installer cache: $APP_DIR/installer (НЕ считается старой нодой)"; fi
+  if [[ -e /etc/caddy/Caddyfile ]] && grep -qiE 'remna|xray|telemt|/dev/shm/nginx.sock' /etc/caddy/Caddyfile 2>/dev/null; then
+    echo '  caddy: /etc/caddy/Caddyfile содержит Remna/Xray/Telemt-конфигурацию'
   fi
 }
 
@@ -74,14 +59,10 @@ confirm_reset(){
     auto)
       has_old_stack || return 1
       printf 'Найдены остатки старой Remna/Proxy-конфигурации. Очистить их перед установкой? [Y/n]: '
-      local a; read -r a
-      case "${a:-Y}" in [Nn]*) return 1 ;; *) return 0 ;; esac
-      ;;
+      local a; read -r a; case "${a:-Y}" in [Nn]*) return 1 ;; *) return 0 ;; esac ;;
     ask)
       printf 'Выполнить очистку старой Remna/Proxy-конфигурации перед установкой? [y/N]: '
-      local a; read -r a
-      case "${a:-N}" in [Yy]*) return 0 ;; *) return 1 ;; esac
-      ;;
+      local a; read -r a; case "${a:-N}" in [Yy]*) return 0 ;; *) return 1 ;; esac ;;
     *) fail "RESET_MODE должен быть ask/auto/force" ;;
   esac
 }
@@ -90,12 +71,8 @@ stop_remove_known_containers(){
   command -v docker >/dev/null 2>&1 || return 0
   local name
   for name in "${KNOWN_CONTAINERS[@]}"; do
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"; then
-      log "Удаляю контейнер: $name"
-      docker rm -f "$name" >/dev/null 2>&1 || true
-    fi
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"; then log "Удаляю контейнер: $name"; docker rm -f "$name" >/dev/null 2>&1 || true; fi
   done
-
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     log "Удаляю старый профильный контейнер: $name"
@@ -109,16 +86,14 @@ remove_old_files(){
   rm -f /etc/logrotate.d/remnanode
   rm -f /etc/letsencrypt/renewal-hooks/deploy/copy-remnanode-certs.sh
   rm -f /usr/local/bin/remnanode
-
-  if [[ -d "$WEBROOT" ]]; then
-    find "$WEBROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-  fi
+  if [[ -d "$WEBROOT" ]]; then find "$WEBROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; fi
 }
 
 cleanup_old_caddy(){
   [[ -e /etc/caddy/Caddyfile ]] || return 0
   if grep -qiE 'remna|xray|telemt|/dev/shm/nginx.sock' /etc/caddy/Caddyfile 2>/dev/null; then
-    local backup="/etc/caddy/Caddyfile.remnanode-backup.$(date +%Y%m%d-%H%M%S)"
+    local backup
+    backup="/etc/caddy/Caddyfile.remnanode-backup.$(date +%Y%m%d-%H%M%S)"
     cp -a /etc/caddy/Caddyfile "$backup"
     warn "Старый Caddyfile сохранен: $backup"
     : > /etc/caddy/Caddyfile
@@ -140,9 +115,7 @@ cleanup_ufw_profile_rules(){
 show_after(){
   echo
   echo 'После очистки:'
-  if command -v docker >/dev/null 2>&1; then
-    docker ps -a --format '  {{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null | grep -Ei 'remna|xray|telemt' || echo '  профильных контейнеров нет'
-  fi
+  if command -v docker >/dev/null 2>&1; then docker ps -a --format '  {{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null | grep -Ei 'remna|xray|telemt' || echo '  профильных контейнеров нет'; fi
   [[ ! -e "$APP_DIR" ]] && echo "  $APP_DIR: удален"
   [[ ! -e /opt/remna-node ]] && echo '  /opt/remna-node: отсутствует'
   [[ ! -e /opt/remnawave-node ]] && echo '  /opt/remnawave-node: отсутствует'
@@ -152,21 +125,17 @@ main(){
   echo '#################### НАЧАЛО ВЫВОДА: RESET OLD NODE ####################'
   require_root
   if ! has_old_stack; then
-    if [[ -d "$APP_DIR/installer" ]]; then
-      log "Найден только кэш текущего установщика: $APP_DIR/installer. Это не старая нода."
-    fi
+    if [[ -d "$APP_DIR/installer" ]]; then log "Найден только кэш текущего установщика: $APP_DIR/installer. Это не старая нода."; fi
     log 'Старая Remna/Proxy-конфигурация не обнаружена. Очистка не требуется.'
     echo '#################### КОНЕЦ ВЫВОДА: RESET OLD NODE ####################'
     return 0
   fi
-
   show_detected
   if ! confirm_reset; then
     log 'Очистка пропущена.'
     echo '#################### КОНЕЦ ВЫВОДА: RESET OLD NODE ####################'
     return 0
   fi
-
   stop_remove_known_containers
   cleanup_old_caddy
   remove_old_files
