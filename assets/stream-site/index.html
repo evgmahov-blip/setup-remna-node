@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>RuStream — облачный гейминг</title>
+  <style>
+    :root{color-scheme:dark;--bg:#080b12;--card:#111725;--line:#232d42;--text:#f4f7ff;--muted:#9ba8bd;--accent:#7cffae}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:radial-gradient(circle at 75% 15%,#182746 0,#080b12 42%);color:var(--text);min-height:100vh}
+    .wrap{max-width:1120px;margin:auto;padding:32px 24px 72px}.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:72px}.logo{font-weight:800;letter-spacing:.04em}.live{font-size:12px;color:var(--accent);border:1px solid #2b7350;border-radius:999px;padding:7px 12px;background:#0b1b14}.hero{display:grid;grid-template-columns:1.2fr .8fr;gap:48px;align-items:center}.eyebrow{font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:.14em}h1{font-size:clamp(44px,7vw,82px);line-height:.95;margin:18px 0 26px;letter-spacing:-.055em}.lead{max-width:680px;color:var(--muted);font-size:19px;line-height:1.6}.actions{display:flex;gap:12px;margin-top:30px}.btn{display:inline-block;text-decoration:none;padding:13px 18px;border-radius:12px;background:var(--accent);color:#06120b;font-weight:750}.btn.secondary{background:#161e2e;color:var(--text);border:1px solid var(--line)}.screen{border:1px solid var(--line);background:linear-gradient(145deg,#101827,#0d111a);border-radius:22px;padding:18px;box-shadow:0 28px 80px #0008}.screen-top{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-bottom:16px}.frame{height:260px;border-radius:14px;background:linear-gradient(135deg,#172e52,#3a1f58 55%,#16221d);display:flex;align-items:end;padding:18px}.badge{font-size:12px;background:#09100dcc;color:var(--accent);padding:7px 10px;border-radius:8px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}.stat{background:#0c111c;border:1px solid var(--line);border-radius:12px;padding:14px}.stat b{display:block;font-size:22px}.stat span{font-size:12px;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:80px}.card{padding:22px;border:1px solid var(--line);border-radius:16px;background:#0d121dba}.card h3{margin:0 0 8px}.card p{margin:0;color:var(--muted);line-height:1.55}.footer{margin-top:72px;padding-top:22px;border-top:1px solid var(--line);color:#6f7b90;font-size:13px}@media(max-width:800px){.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.nav{margin-bottom:45px}.frame{height:210px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <nav class="nav"><div class="logo">RuStream</div><div class="live">● LIVE · EDGE ONLINE</div></nav>
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Cloud Gaming Platform</div>
+        <h1>Любая игра.<br>Любое устройство.</h1>
+        <p class="lead">Игровой стриминг с серверных GPU. Запускайте проекты в браузере без больших загрузок и ожидания обновлений.</p>
+        <div class="actions"><a class="btn" href="#catalog">Открыть каталог</a><a class="btn secondary" href="#how">Как это работает</a></div>
+      </div>
+      <div class="screen">
+        <div class="screen-top"><span>rustream://session/edge-03</span><span>CONNECTED</span></div>
+        <div class="frame"><span class="badge">● STREAM · 120 FPS</span></div>
+        <div class="stats"><div class="stat"><b>9 ms</b><span>latency</span></div><div class="stat"><b>4K</b><span>resolution</span></div><div class="stat"><b>120</b><span>FPS</span></div></div>
+      </div>
+    </section>
+    <section class="grid" id="catalog">
+      <article class="card"><h3>Быстрый старт</h3><p>Сессия запускается в браузере. Установка больших игровых клиентов не требуется.</p></article>
+      <article class="card"><h3>Облачные GPU</h3><p>Вычисления выполняются на удалённых игровых серверах, устройство принимает видеопоток.</p></article>
+      <article class="card" id="how"><h3>Сохранения в облаке</h3><p>Продолжайте игру на другом устройстве без переноса локальных файлов.</p></article>
+    </section>
+    <div class="footer">RuStream · streaming infrastructure · © 2026</div>
+  </main>
+</body>
+</html>
