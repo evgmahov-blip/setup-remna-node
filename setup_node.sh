@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Remnanode Production Installer v2.0
-# Primary: VLESS + XHTTP + REALITY / TCP 443
-# Optional: Hysteria2 / UDP 443
-# SelfSteal: STREAM or RADIO
+# Public TCP/443: nginx SNI frontend + independent SelfSteal
+# Primary proxy: VLESS + XHTTP + REALITY -> internal TCP/10443
+# Optional: Hysteria2 -> UDP/443
 # ==============================================================================
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -33,13 +33,13 @@ log(){ printf '%b[*]%b %s\n' "$B" "$N" "$*"; }
 ok(){ printf '%b[OK]%b %s\n' "$G" "$N" "$*"; }
 warn(){ printf '%b[!]%b %s\n' "$Y" "$N" "$*"; }
 fail(){ printf '%b[ERROR]%b %s\n' "$R" "$N" "$*" >&2; return 1; }
-
 pause_prompt(){ printf '\nНажмите Enter, чтобы вернуться в меню...'; read -r _ || true; }
 curl_tls12(){ curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --max-time 90 --retry 2 "$@"; }
 
 node_domain(){ cat "$APP_DIR/.node_domain" 2>/dev/null || true; }
-hysteria_state(){ [[ -r "$APP_DIR/.hysteria2-enabled" ]] && cat "$APP_DIR/.hysteria2-enabled" || printf '0'; }
+reality_sni(){ cat "$APP_DIR/.reality_sni" 2>/dev/null || true; }
 profile_exists(){ [[ -s "$APP_DIR/config-profile.json" ]]; }
+hysteria_state(){ cat "$APP_DIR/.hysteria2-enabled" 2>/dev/null || echo 0; }
 
 register_globally(){
   install -d -m 0755 /usr/local/bin
@@ -104,49 +104,56 @@ run_zero_reset(){
   pause_prompt
 }
 
-print_profile_state(){
-  local domain h2 site path
-  domain="$(node_domain)"
-  h2="$(hysteria_state)"
-  site="$(sed -n 's/^TYPE=//p' "$APP_DIR/.selfsteal-site" 2>/dev/null || true)"
-  path="$(cat "$APP_DIR/.xhttp_path" 2>/dev/null || true)"
-  printf 'Текущее состояние:\n'
-  printf '  Домен:      %s\n' "${domain:-не задан}"
-  printf '  SelfSteal:  %s\n' "${site:-не настроен}"
+show_profile_state(){
+  printf '  Домен:            %s\n' "$(node_domain)"
+  printf '  SelfSteal:        %s\n' "$(sed -n 's/^TYPE=//p' "$APP_DIR/.selfsteal-site" 2>/dev/null || echo 'не настроен')"
   if profile_exists; then
-    printf '  Профиль:    %bСОЗДАН%b\n' "$G" "$N"
-    printf '  XHTTP path: %s\n' "${path:-не найден}"
+    printf '  Локальный JSON:   СОЗДАН (это еще не означает, что он назначен ноде в панели)\n'
   else
-    printf '  Профиль:    %bНЕ СОЗДАН%b\n' "$Y" "$N"
+    printf '  Локальный JSON:   НЕ СОЗДАН\n'
   fi
-  if [[ "$h2" == 1 ]]; then printf '  Hysteria2:  ВКЛЮЧЕНА (UDP/443)\n'; else printf '  Hysteria2:  выключена\n'; fi
-  printf '\n'
-  if ! profile_exists; then
-    warn "Config Profile еще не создан. Поэтому внешний SelfSteal через :443 сейчас не обязан работать."
-    warn "127.0.0.1:8443 — внутренний backend; публичный TCP/443 принадлежит rw-core."
-    printf '\n'
-  fi
+  printf '  XHTTP path:       %s\n' "$(cat "$APP_DIR/.xhttp_path" 2>/dev/null || echo 'еще не создан')"
+  printf '  REALITY SNI:      %s\n' "$(reality_sni)"
+  if [[ "$(hysteria_state)" == 1 ]]; then printf '  Hysteria2:        ВКЛЮЧЕНА\n'; else printf '  Hysteria2:        выключена\n'; fi
+}
+
+run_profile_generator(){
+  local mode="$1"
+  ensure_bundle
+  # Сначала гарантируем независимый публичный сайт на TCP/443.
+  # Xray после этого должен слушать внутренний 127.0.0.1:10443 из сгенерированного профиля.
+  bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
+  ENABLE_HYSTERIA2="$mode" bash "$PRODUCTION_DIR/generate-remnawave-profile.sh"
 }
 
 run_profile_manager(){
   clear; ensure_bundle
   [[ -f "$APP_DIR/docker-compose.yml" ]] || { fail "Нода еще не установлена"; pause_prompt; return; }
+
   printf '%b=== ТРАНСПОРТЫ И REMNAWAVE CONFIG PROFILE ===%b\n\n' "$C" "$N"
-  print_profile_state
-  printf '  1) Создать/обновить production-профиль (Hysteria2 оставить как сейчас; первый раз ВЫКЛ)\n'
-  printf '  2) Создать/обновить профиль и выбрать Hysteria2 заново\n'
-  printf '  3) Показать готовые значения для Remnawave Host\n'
-  printf '  4) Показать полный JSON Config Profile\n'
-  printf '  5) Проверить SelfSteal backend и REALITY fallback на :443\n'
-  printf '  0) Назад\n\n'
-  printf 'Выбор [0]: '
+  show_profile_state
+  printf '\nЧто здесь происходит:\n'
+  printf '  - скрипт генерирует ПОЛНЫЙ серверный Config Profile;\n'
+  printf '  - JSON из пункта 1/2 копируешь целиком в Management -> Config Profiles;\n'
+  printf '  - после этого назначаешь профиль ноде;\n'
+  printf '  - затем создаешь Host по готовым значениям из пункта 3;\n'
+  printf '  - External XRAY_JSON не заменяется: для него генерируется отдельный injectHosts-фрагмент.\n\n'
+
+  printf '  1) СГЕНЕРИРОВАТЬ И СРАЗУ ВЫВЕСТИ JSON ДЛЯ COPY-PASTE (Hysteria2 оставить как сейчас)\n'
+  printf '  2) СГЕНЕРИРОВАТЬ И ВЫВЕСТИ JSON + заново выбрать Hysteria2\n'
+  printf '  3) Показать точные значения Host для Remnawave\n'
+  printf '  4) Повторно вывести полный Config Profile JSON\n'
+  printf '  5) Показать injectHosts-фрагмент для существующего External XRAY_JSON\n'
+  printf '  6) Проверить сайт и REALITY-маршрут\n'
+  printf '  0) Назад\n\nВыбор [0]: '
   local choice; read -r choice; choice=${choice:-0}
   case "$choice" in
-    1) ENABLE_HYSTERIA2=keep bash "$PRODUCTION_DIR/generate-remnawave-profile.sh" ;;
-    2) ENABLE_HYSTERIA2=ask bash "$PRODUCTION_DIR/generate-remnawave-profile.sh" ;;
-    3) if [[ -r "$APP_DIR/remnawave-ready.txt" ]]; then cat "$APP_DIR/remnawave-ready.txt"; else warn "Сначала создай профиль пунктом 1 или 2"; fi ;;
-    4) if profile_exists; then cat "$APP_DIR/config-profile.json"; else warn "Сначала создай профиль пунктом 1 или 2"; fi ;;
-    5) run_selfsteal_test ;;
+    1) run_profile_generator keep ;;
+    2) run_profile_generator ask ;;
+    3) [[ -r "$APP_DIR/remnawave-ready.txt" ]] && cat "$APP_DIR/remnawave-ready.txt" || warn "Сначала выбери пункт 1 или 2" ;;
+    4) [[ -r "$APP_DIR/config-profile.json" ]] && { echo '#################### НАЧАЛО ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'; cat "$APP_DIR/config-profile.json"; echo '#################### КОНЕЦ ВЫВОДА: COPY-PASTE REMNAWAVE CONFIG PROFILE ####################'; } || warn "Сначала выбери пункт 1 или 2" ;;
+    5) [[ -r "$APP_DIR/external-json-inject-snippet.json" ]] && cat "$APP_DIR/external-json-inject-snippet.json" || warn "Сначала выбери пункт 1 или 2" ;;
+    6) run_selfsteal_test ;;
     0) return ;;
     *) warn "Неизвестный пункт" ;;
   esac
@@ -156,13 +163,14 @@ run_profile_manager(){
 run_selfsteal_manager(){
   clear; ensure_bundle
   [[ -f "$APP_DIR/docker-compose.yml" ]] || { fail "Нода еще не установлена"; pause_prompt; return; }
-  printf '%b=== SELFSTEAL САЙТ ===%b\n\n' "$C" "$N"
+  printf '%b=== SELFSTEAL SITE ===%b\n' "$C" "$N"
   [[ -r "$APP_DIR/.selfsteal-site" ]] && { printf 'Текущая конфигурация:\n'; sed 's/^/  /' "$APP_DIR/.selfsteal-site"; }
-  printf '\n  1) STREAM — локальный versioned snapshot из этого репозитория\n'
+  printf '\nПубличный сайт всегда должен открываться по https://%s/ независимо от Config Profile.\n' "$(node_domain)"
+  printf '\n  1) STREAM — versioned сайт из этого репозитория\n'
   printf '  2) RADIO — radio-stub-site + скрытый URL управления\n'
   printf '  3) Показать URL управления RADIO\n'
-  printf '  4) Проверить локальный backend и публичный fallback\n'
-  printf '  0) Назад\n\nВыбор [0]: '
+  printf '  4) Проверить публичный и локальный SelfSteal\n'
+  printf '  0) Назад\nВыбор [0]: '
   local choice; read -r choice; choice=${choice:-0}
   case "$choice" in
     1) SELFSTEAL_SITE=stream REMNANODE_REPO="$REPO" REMNANODE_REPO_REF="$REPO_REF" bash "$PRODUCTION_DIR/install-stream-site.sh"; bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
@@ -186,29 +194,31 @@ show_radio_admin(){
 }
 
 run_selfsteal_test(){
-  local domain code local_code
+  local domain sni local_code public_code reality_code owner443
   domain="$(node_domain)"
+  sni="$(reality_sni)"
   [[ -n "$domain" ]] || { warn "Домен ноды не найден"; return 0; }
 
   echo '#################### НАЧАЛО ВЫВОДА: SELFSTEAL TEST ####################'
-  printf '1) Локальный backend 127.0.0.1:8443 ...\n'
+  owner443="$(ss -lntp 2>/dev/null | awk '$4 ~ /:443$/ {print; exit}')"
+  printf 'TCP/443 owner: %s\n' "${owner443:-не найден}"
+
   local_code="$(curl -ksS --tls-max 1.2 --resolve "$domain:8443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$domain:8443/" 2>/dev/null || true)"
-  if [[ "$local_code" =~ ^[23][0-9][0-9]$ ]]; then
-    ok "backend отвечает HTTP $local_code"
+  if [[ "$local_code" =~ ^[23][0-9][0-9]$ ]]; then ok "локальный backend 127.0.0.1:8443 -> HTTP $local_code"; else warn "локальный backend -> ${local_code:-000}"; fi
+
+  public_code="$(curl -ksS --tls-max 1.2 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$domain/" 2>/dev/null || true)"
+  if [[ "$public_code" =~ ^[23][0-9][0-9]$ ]]; then
+    ok "ПУБЛИЧНЫЙ SelfSteal https://$domain/ -> HTTP $public_code (не зависит от Remnawave profile)"
   else
-    warn "backend не отдал нормальный HTTP-ответ (код: ${local_code:-нет ответа})"
+    warn "Публичный SelfSteal не работает: HTTP ${public_code:-000}"
   fi
 
-  printf '2) REALITY fallback через локальный TCP/443 ...\n'
-  code="$(curl -ksS --tls-max 1.2 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$domain/" 2>/dev/null || true)"
-  if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
-    ok "fallback через rw-core отвечает HTTP $code"
-  else
-    warn "fallback через :443 не подтвержден (код: ${code:-нет ответа})"
-    if ! profile_exists; then
-      warn "Причина ожидаемая: Config Profile еще не создан."
+  if [[ -n "$sni" ]]; then
+    reality_code="$(curl -ksS --tls-max 1.2 --resolve "$sni:443:127.0.0.1" -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "https://$sni/" 2>/dev/null || true)"
+    if [[ "$reality_code" =~ ^[23][0-9][0-9]$ ]]; then
+      ok "REALITY SNI route $sni -> Xray -> fallback HTTP $reality_code"
     else
-      warn "Локальный JSON сам по себе rw-core не активирует: профиль должен быть создан/назначен ноде в панели Remnawave."
+      warn "REALITY SNI route пока не подтвержден (${reality_code:-000}). После назначения нового профиля rw-core должен слушать 127.0.0.1:10443."
     fi
   fi
   echo '#################### КОНЕЦ ВЫВОДА: SELFSTEAL TEST ####################'
@@ -218,12 +228,10 @@ show_status(){
   clear
   echo '#################### НАЧАЛО ВЫВОДА: NODE STATUS ####################'
   printf 'Domain: %s\n' "$(node_domain)"
-  printf 'Config Profile: '; if profile_exists; then echo 'CREATED'; else echo 'NOT CREATED'; fi
+  printf 'Local Config Profile: '; if profile_exists; then echo 'CREATED (назначение в панели отдельно)'; else echo 'NOT CREATED'; fi
   printf 'Hysteria2: '; if [[ "$(hysteria_state)" == 1 ]]; then echo 'ENABLED'; else echo 'DISABLED'; fi
   printf '\nContainers:\n'; docker ps --filter name=remnanode --filter name=remnawave-nginx --format '  {{.Names}}\t{{.Status}}' 2>/dev/null || true
-  printf '\nListeners:\n'; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
-  printf '\nTLS SelfSteal:\n'
-  if [[ -r "$APP_DIR/.node_domain" ]]; then local domain; domain="$(node_domain)"; printf '' | openssl s_client -connect 127.0.0.1:8443 -servername "$domain" -tls1_2 2>/dev/null | awk '/Protocol  :|Cipher    :|Verify return code:/{print "  "$0}' || true; fi
+  printf '\nListeners:\n'; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:10443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
   printf '\nCert mount in remnanode:\n'; docker exec remnanode sh -c 'test -s /etc/xray/certs/fullchain.pem && test -s /etc/xray/certs/privkey.pem && echo "  OK /etc/xray/certs"' 2>/dev/null || warn "Сертификаты внутри remnanode не подтверждены"
   [[ -r "$APP_DIR/.selfsteal-site" ]] && { printf '\nSelfSteal:\n'; sed 's/^/  /' "$APP_DIR/.selfsteal-site"; }
   [[ -r "$APP_DIR/config-profile-public.txt" ]] && { printf '\nProfile summary:\n'; sed 's/^/  /' "$APP_DIR/config-profile-public.txt"; }
@@ -245,17 +253,18 @@ main_menu(){
   while true; do
     clear
     printf '%b============================================================%b\n' "$C" "$N"
-    printf '%b  REMNANODE PRODUCTION · XHTTP + REALITY · TCP/443%b\n' "$C" "$N"
+    printf '%b  REMNANODE PRODUCTION · SELFSTEAL + XHTTP/REALITY%b\n' "$C" "$N"
     printf '%b============================================================%b\n' "$C" "$N"
     if [[ -f "$APP_DIR/docker-compose.yml" ]]; then printf 'Нода: %bустановлена%b\n' "$G" "$N"; else printf 'Нода: %bне установлена%b\n' "$Y" "$N"; fi
     if [[ -f "$APP_DIR/docker-compose.yml" ]]; then
-      printf 'Профиль Remnawave: '; if profile_exists; then printf '%bсоздан%b\n' "$G" "$N"; else printf '%bНЕ создан%b\n' "$Y" "$N"; fi
+      printf 'Локальный профиль: '; if profile_exists; then printf '%bсоздан%b\n' "$G" "$N"; else printf '%bНЕ создан%b\n' "$Y" "$N"; fi
       printf 'SelfSteal: %s\n' "$(sed -n 's/^TYPE=//p' "$APP_DIR/.selfsteal-site" 2>/dev/null || echo 'не настроен')"
+      printf 'Public site: https://%s/\n' "$(node_domain)"
     fi
-    printf '\n  1) Установить / переустановить production-ноду полностью\n'
-    printf '  2) Транспорты + готовый Config Profile для Remnawave\n'
-    printf '  3) SelfSteal сайт: STREAM / RADIO + проверка\n'
-    printf '  4) Полная диагностика ноды и SelfSteal\n'
+    printf '\n  1) Полная установка / переустановка production-ноды\n'
+    printf '  2) Сгенерировать COPY-PASTE Config Profile + Host + External JSON данные\n'
+    printf '  3) SelfSteal сайт: STREAM / RADIO + публичная проверка\n'
+    printf '  4) Полная диагностика ноды\n'
     printf '  5) Legacy-инструменты: Telemt и старые сервисные функции\n'
     printf '  9) Полностью удалить старый Remna/Proxy-стек\n'
     printf '  0) Выход\n\nВыбор [0]: '
