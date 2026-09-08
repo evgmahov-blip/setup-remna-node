@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
 WWW_DIR="${WWW_DIR:-/var/www/html}"
 NODE_DOMAIN_FILE="$APP_DIR/.node_domain"
+NODE_NAME_FILE="$APP_DIR/.node_name"
 TRANSPORT_FILE="$APP_DIR/.transport"
 CAMOUFLAGE_FILE="$APP_DIR/.camouflage_mode"
 REALITY_ENV="$APP_DIR/reality.env"
@@ -36,6 +37,37 @@ node_domain(){
     return 1
   fi
   printf '%s' "$d"
+}
+
+node_name(){
+  local n="${NODE_NAME:-}" detected=""
+  if [[ -z "$n" && -r "$NODE_NAME_FILE" ]]; then
+    n="$(head -n1 "$NODE_NAME_FILE" | tr -d '\r\n')"
+  fi
+  if [[ -z "$n" ]]; then
+    detected="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+    n="$detected"
+  fi
+  if [[ -z "$n" ]]; then
+    n="$(node_domain)"
+    n="${n%%.*}"
+  fi
+  n="$(printf '%s' "$n" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+  [[ -n "$n" ]] || { fail "Не удалось определить имя сервера для inbound"; return 1; }
+  printf '%s\n' "$n" > "$NODE_NAME_FILE"
+  chmod 600 "$NODE_NAME_FILE"
+  printf '%s' "$n"
+}
+
+inbound_name(){
+  local base transport="$1"
+  base="$(node_name)" || return 1
+  case "$transport" in
+    xhttp) printf '%s-xHTTP' "$base" ;;
+    raw) printf '%s-RAW' "$base" ;;
+    hysteria) printf '%s-Hysteria2' "$base" ;;
+    *) fail "Неизвестный транспорт для имени inbound: $transport"; return 1 ;;
+  esac
 }
 
 xray_cmd(){
@@ -359,14 +391,15 @@ reality_min_client_json(){
 }
 
 write_xhttp_profile(){
-  local f="$PROFILE_DIR/xhttp-reality.json" tmp tmp2 sig="$APP_DIR/xhttp-signature.json"
+  local f="$PROFILE_DIR/xhttp-reality.json" tmp tmp2 sig="$APP_DIR/xhttp-signature.json" inbound
+  inbound="$(inbound_name xhttp)" || return 1
   resolve_xhttp_path
   tmp="$(mktemp "$PROFILE_DIR/.xhttp-reality.XXXXXX.json")"
   {
     base_profile_prefix
     cat <<JSON
     {
-      "tag": "XHTTP_REALITY",
+      "tag": "$inbound",
       "listen": "$LISTEN_ADDR",
       "port": $PUBLIC_PORT,
       "protocol": "vless",
@@ -415,13 +448,14 @@ JSON
 }
 
 write_raw_profile(){
-  local f="$PROFILE_DIR/raw-reality.json" tmp
+  local f="$PROFILE_DIR/raw-reality.json" tmp inbound
+  inbound="$(inbound_name raw)" || return 1
   tmp="$(mktemp "$PROFILE_DIR/.raw-reality.XXXXXX.json")"
   {
     base_profile_prefix
     cat <<JSON
     {
-      "tag": "RAW_REALITY",
+      "tag": "$inbound",
       "listen": "$LISTEN_ADDR",
       "port": $PUBLIC_PORT,
       "protocol": "vless",
@@ -528,7 +562,8 @@ hysteria_masquerade_json(){
 }
 
 write_hysteria_profile(){
-  local f="$PROFILE_DIR/hysteria2-tls.json" masq tmp
+  local f="$PROFILE_DIR/hysteria2-tls.json" masq tmp inbound
+  inbound="$(inbound_name hysteria)" || return 1
   [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || { fail "Для Hysteria2 нужны $CERTS_DIR/fullchain.pem и privkey.pem"; return 1; }
   ensure_hysteria_cert_mount
   masq="$(hysteria_masquerade_json)" || return 1
@@ -537,7 +572,7 @@ write_hysteria_profile(){
     base_profile_prefix
     cat <<JSON
     {
-      "tag": "HYSTERIA2_TLS",
+      "tag": "$inbound",
       "listen": "$LISTEN_ADDR",
       "port": $PUBLIC_PORT,
       "protocol": "hysteria",
@@ -567,14 +602,15 @@ JSON
 }
 
 write_host_values(){
-  local transport="$1" d minver
+  local transport="$1" d minver inbound
   d="$(node_domain)"
+  inbound="$(inbound_name "$transport")" || return 1
   minver="${REALITY_MIN_CLIENT_VER:-26.3.27 (дефолт Xray)}"
   case "$transport" in
     xhttp)
       cat > "$PROFILE_DIR/host-xhttp.txt" <<HOST
-Remark: XHTTP-REALITY
-Inbound: XHTTP_REALITY
+Remark: $inbound
+Inbound: $inbound
 Address: $d
 Port: $PUBLIC_PORT
 Security Layer: DEFAULT
@@ -593,8 +629,8 @@ HOST
       ;;
     raw)
       cat > "$PROFILE_DIR/host-raw.txt" <<HOST
-Remark: RAW-REALITY
-Inbound: RAW_REALITY
+Remark: $inbound
+Inbound: $inbound
 Address: $d
 Port: $PUBLIC_PORT
 Security Layer: DEFAULT
@@ -612,8 +648,8 @@ HOST
       ;;
     hysteria)
       cat > "$PROFILE_DIR/host-hysteria2.txt" <<HOST
-Remark: HYSTERIA2-TLS
-Inbound: HYSTERIA2_TLS
+Remark: $inbound
+Inbound: $inbound
 Address: $d
 Port: $PUBLIC_PORT/UDP
 Security Layer: DEFAULT
