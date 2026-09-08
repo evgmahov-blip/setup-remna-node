@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-1e266f373c1db96fe7f12b236247b23c7d417f87}"
+MODULE_REF="${REMNANODE_REPO_REF:-1d699a3a5322e3e5ae6bf07853ae200613cec05f}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
@@ -12,7 +12,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 LEGACY_SHA256="aa79bc94916d41770b18dbad2ca0890123fc64cd5ce397841ca9f92e05dc67bf"
 
 declare -A MODULE_SHA256=(
-  [production/remnawave-transport-manager.sh]="eed8ab8bd354de4a43c99900a8ac747323beb10430464c3f4d485ad8f672d4c7"
+  [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
   [production/selfsteal-site-manager.sh]="e0e9b24bf8c5cdbdf8b7714d12e69d94e6d775031802358c209a4e06c5fe75d4"
@@ -215,6 +215,7 @@ show_profiles(){
     xhttp) active_file='xhttp-reality.json' ;;
     raw) active_file='raw-reality.json' ;;
     hysteria) active_file='hysteria2-tls.json' ;;
+    combined) active_file='xhttp-hysteria2.json' ;;
   esac
   while IFS= read -r f; do
     base="$(basename "$f")"
@@ -275,7 +276,7 @@ menu(){
     echo -e "   ${WHITE}2)${NC} 📊 Сводный статус ноды / портов / модулей"
     echo
     echo -e "${CYAN}  [TRANSPORT / REMNAWAVE]${NC}"
-    echo -e "   ${WHITE}3)${NC} ⚡ Создать Config Profile + Host для XHTTP / RAW / Hysteria2"
+    echo -e "   ${WHITE}3)${NC} ⚡ Создать Config Profile + Host для XHTTP / RAW / Hysteria2 / XHTTP+Hysteria2"
     echo -e "   ${WHITE}4)${NC} 📁 Показать созданные профили и Host-подсказки"
     echo -e "   ${WHITE}5)${NC} 🧬 XHTTP signature — применить / снять / показать"
     echo
