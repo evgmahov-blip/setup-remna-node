@@ -80,8 +80,43 @@ run_upstream_menu(){
   )
 }
 
+whitelist_contains_ip(){
+  local ip="$1" file="/etc/rkn-watcher/whitelist.json"
+  [[ -n "$ip" && -r "$file" ]] || return 1
+  python3 - "$ip" "$file" <<'PY'
+import ipaddress, json, sys
+ip_s, path = sys.argv[1], sys.argv[2]
+try:
+    needle = ipaddress.ip_address(ip_s)
+    data = json.load(open(path, encoding='utf-8'))
+except Exception:
+    raise SystemExit(1)
+
+def walk(v):
+    if isinstance(v, dict):
+        for x in v.values():
+            yield from walk(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from walk(x)
+    elif isinstance(v, str):
+        yield v.strip()
+
+for value in walk(data):
+    try:
+        if '/' in value:
+            if needle in ipaddress.ip_network(value, strict=False):
+                raise SystemExit(0)
+        elif needle == ipaddress.ip_address(value):
+            raise SystemExit(0)
+    except ValueError:
+        pass
+raise SystemExit(1)
+PY
+}
+
 safe_apply(){
-  local panel_ip="" ssh_ip=""
+  local panel_ip="" ssh_ip="" answer="" unsafe=0
   [[ -r "$APP_DIR/.panel_ip" ]] && panel_ip="$(tr -d '[:space:]' < "$APP_DIR/.panel_ip")"
   ssh_ip="${SSH_CLIENT%% *}"
 
@@ -94,12 +129,34 @@ safe_apply(){
   [[ -r /etc/rkn-watcher/settings.conf ]] && cat /etc/rkn-watcher/settings.conf || true
   [[ -r /etc/rkn-watcher/whitelist.json ]] && cat /etc/rkn-watcher/whitelist.json || true
   [[ -r /etc/rkn-watcher/blacklist.json ]] && cat /etc/rkn-watcher/blacklist.json || true
+  echo
+
+  if [[ -n "$ssh_ip" ]] && whitelist_contains_ip "$ssh_ip"; then
+    echo "[OK] Текущий SSH IP $ssh_ip найден в whitelist (точно или через CIDR)."
+  else
+    echo "[WARN] Текущий SSH IP ${ssh_ip:-не определён} НЕ подтверждён whitelist.json."
+    unsafe=1
+  fi
+
+  if [[ -n "$panel_ip" ]] && whitelist_contains_ip "$panel_ip"; then
+    echo "[OK] IP панели $panel_ip найден в whitelist (точно или через CIDR)."
+  else
+    echo "[WARN] IP панели ${panel_ip:-не определён} НЕ подтверждён whitelist.json."
+    unsafe=1
+  fi
+
   echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER PRECHECK ####################'
 
   echo
   echo 'Автоматически apply не выполняю: это отдельное подтверждаемое действие.'
-  read -r -p 'Применить текущую конфигурацию RKN Watcher? Введите APPLY: ' answer
-  [[ "$answer" == 'APPLY' ]] || { say '[INFO] Применение отменено'; return 0; }
+  if (( unsafe )); then
+    echo '[ОПАСНО] Есть риск потерять SSH или связь ноды с панелью.'
+    read -r -p 'Для продолжения в небезопасном состоянии введите UNSAFE-APPLY: ' answer
+    [[ "$answer" == 'UNSAFE-APPLY' ]] || { say '[INFO] Применение отменено'; return 0; }
+  else
+    read -r -p 'Применить текущую конфигурацию RKN Watcher? Введите APPLY: ' answer
+    [[ "$answer" == 'APPLY' ]] || { say '[INFO] Применение отменено'; return 0; }
+  fi
 
   if command -v rkn-watcher >/dev/null 2>&1; then
     rkn-watcher apply
