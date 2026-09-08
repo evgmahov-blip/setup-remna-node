@@ -7,6 +7,8 @@
 # ==============================================================================
 set -Eeuo pipefail
 IFS=$'\n\t'
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   printf '\033[31m[ERROR]\033[0m Запустите скрипт от root.\n' >&2
@@ -21,6 +23,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 INSTALLER_DIR="${APP_DIR}/installer"
 PRODUCTION_DIR="${INSTALLER_DIR}/production"
 LEGACY_DIR="${INSTALLER_DIR}/legacy"
+ASSET_DIR="${INSTALLER_DIR}/assets/stream-site"
 LOCAL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 
 R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; B=$'\033[34m'; C=$'\033[36m'; N=$'\033[0m'
@@ -31,14 +34,8 @@ ok(){ printf '%b[OK]%b %s\n' "$G" "$N" "$*"; }
 warn(){ printf '%b[!]%b %s\n' "$Y" "$N" "$*"; }
 fail(){ printf '%b[ERROR]%b %s\n' "$R" "$N" "$*" >&2; return 1; }
 
-pause_prompt(){
-  printf '\nНажмите Enter, чтобы вернуться в меню...'
-  read -r _ || true
-}
-
-curl_tls12(){
-  curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --max-time 90 --retry 2 "$@"
-}
+pause_prompt(){ printf '\nНажмите Enter, чтобы вернуться в меню...'; read -r _ || true; }
+curl_tls12(){ curl -fsSL --proto '=https' --tls-max 1.2 --connect-timeout 10 --max-time 90 --retry 2 "$@"; }
 
 register_globally(){
   install -d -m 0755 /usr/local/bin
@@ -51,14 +48,14 @@ register_globally(){
 }
 
 bundle_file(){
-  local rel="$1" dst="$2"
+  local rel="$1" dst="$2" mode="${3:-0755}"
   if [[ -s "$LOCAL_ROOT/$rel" ]]; then
-    install -D -m 0755 "$LOCAL_ROOT/$rel" "$dst"
+    install -D -m "$mode" "$LOCAL_ROOT/$rel" "$dst"
     return 0
   fi
   install -d -m 0755 "$(dirname "$dst")"
   curl_tls12 "$RAW_BASE/$rel" -o "$dst" || fail "Не удалось получить $rel"
-  chmod 0755 "$dst"
+  chmod "$mode" "$dst"
 }
 
 ensure_bundle(){
@@ -69,11 +66,10 @@ ensure_bundle(){
   bundle_file production/install-stream-site.sh "$PRODUCTION_DIR/install-stream-site.sh"
   bundle_file production/configure-selfsteal-nginx.sh "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
   bundle_file production/generate-remnawave-profile.sh "$PRODUCTION_DIR/generate-remnawave-profile.sh"
+  bundle_file assets/stream-site/index.html "$ASSET_DIR/index.html" 0644
 
   local f
-  for f in "$PRODUCTION_DIR"/*.sh; do
-    bash -n "$f" || fail "Ошибка синтаксиса: $f"
-  done
+  for f in "$PRODUCTION_DIR"/*.sh; do bash -n "$f" || fail "Ошибка синтаксиса: $f"; done
 }
 
 ensure_legacy(){
@@ -85,16 +81,10 @@ run_full_install(){
   clear
   echo '#################### НАЧАЛО ВЫВОДА: FULL PRODUCTION INSTALL ####################'
   ensure_bundle
-
-  # На чистой ноде reset ничего не делает. Если обнаружены старые Remna/Xray/Telemt/Caddy
-  # артефакты, скрипт покажет их и предложит очистить перед новой установкой.
   RESET_MODE=auto bash "$PRODUCTION_DIR/reset-node.sh"
-
-  # reset может удалить /opt/remnanode вместе с временно скачанным bundle.
-  # Поэтому загружаем production bundle еще раз после очистки.
   ensure_bundle
   bash "$PRODUCTION_DIR/setup-base-node.sh"
-  bash "$PRODUCTION_DIR/install-production.sh"
+  REMNANODE_REPO="$REPO" REMNANODE_REPO_REF="$REPO_REF" bash "$PRODUCTION_DIR/install-production.sh"
   register_globally || true
   echo '#################### КОНЕЦ ВЫВОДА: FULL PRODUCTION INSTALL ####################'
   pause_prompt
@@ -112,10 +102,8 @@ run_zero_reset(){
 }
 
 run_profile_manager(){
-  clear
-  ensure_bundle
+  clear; ensure_bundle
   [[ -f "$APP_DIR/docker-compose.yml" ]] || { fail "Нода еще не установлена"; pause_prompt; return; }
-
   printf '%bRemnawave Config Profile%b\n' "$C" "$N"
   printf '  1) Перегенерировать профиль, сохранив текущий выбор Hysteria2\n'
   printf '  2) Перегенерировать профиль и заново спросить про Hysteria2\n'
@@ -136,30 +124,15 @@ run_profile_manager(){
 }
 
 run_selfsteal_manager(){
-  clear
-  ensure_bundle
+  clear; ensure_bundle
   [[ -f "$APP_DIR/docker-compose.yml" ]] || { fail "Нода еще не установлена"; pause_prompt; return; }
-
   printf '%bSelfSteal%b\n' "$C" "$N"
-  if [[ -r "$APP_DIR/.selfsteal-site" ]]; then
-    printf 'Текущая конфигурация:\n'
-    sed 's/^/  /' "$APP_DIR/.selfsteal-site"
-  fi
-  printf '\n  1) STREAM\n'
-  printf '  2) RADIO\n'
-  printf '  3) Показать URL управления RADIO\n'
-  printf '  0) Назад\n'
-  printf 'Выбор [0]: '
+  [[ -r "$APP_DIR/.selfsteal-site" ]] && { printf 'Текущая конфигурация:\n'; sed 's/^/  /' "$APP_DIR/.selfsteal-site"; }
+  printf '\n  1) STREAM\n  2) RADIO\n  3) Показать URL управления RADIO\n  0) Назад\nВыбор [0]: '
   local choice; read -r choice; choice=${choice:-0}
   case "$choice" in
-    1)
-      SELFSTEAL_SITE=stream bash "$PRODUCTION_DIR/install-stream-site.sh"
-      bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
-      ;;
-    2)
-      SELFSTEAL_SITE=radio bash "$PRODUCTION_DIR/install-stream-site.sh"
-      bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh"
-      ;;
+    1) SELFSTEAL_SITE=stream REMNANODE_REPO="$REPO" REMNANODE_REPO_REF="$REPO_REF" bash "$PRODUCTION_DIR/install-stream-site.sh"; bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
+    2) SELFSTEAL_SITE=radio REMNANODE_REPO="$REPO" REMNANODE_REPO_REF="$REPO_REF" bash "$PRODUCTION_DIR/install-stream-site.sh"; bash "$PRODUCTION_DIR/configure-selfsteal-nginx.sh" ;;
     3) show_radio_admin ;;
     0) return ;;
     *) warn "Неизвестный пункт" ;;
@@ -170,32 +143,21 @@ run_selfsteal_manager(){
 show_radio_admin(){
   local state="$APP_DIR/.selfsteal-site" domain path
   [[ -r "$state" ]] || { warn "SelfSteal еще не настроен"; return 0; }
-  if ! grep -q '^TYPE=radio$' "$state"; then
-    warn "Сейчас выбран не RADIO"
-    return 0
-  fi
+  if ! grep -q '^TYPE=radio$' "$state"; then warn "Сейчас выбран не RADIO"; return 0; fi
   domain="$(cat "$APP_DIR/.node_domain" 2>/dev/null || true)"
   path="$(sed -n 's/^ADMIN_PATH=//p' "$state")"
   [[ -n "$domain" && -n "$path" ]] || { warn "Не удалось определить URL"; return 0; }
   printf 'RADIO management: %bhttps://%s%s%b\n' "$C" "$domain" "$path" "$N"
-  warn "RADIO upstream хранит настройки в localStorage браузера; скрытый URL не является серверной БД настроек."
 }
 
 show_status(){
   clear
   echo '#################### НАЧАЛО ВЫВОДА: NODE STATUS ####################'
-  printf 'Containers:\n'
-  docker ps --filter name=remnanode --filter name=remnawave-nginx --format '  {{.Names}}\t{{.Status}}' 2>/dev/null || true
-  printf '\nListeners:\n'
-  ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
+  printf 'Containers:\n'; docker ps --filter name=remnanode --filter name=remnawave-nginx --format '  {{.Names}}\t{{.Status}}' 2>/dev/null || true
+  printf '\nListeners:\n'; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:8443[[:space:]]|:2222[[:space:]])' | sed 's/^/  /' || true
   printf '\nTLS SelfSteal:\n'
-  if [[ -r "$APP_DIR/.node_domain" ]]; then
-    local domain; domain="$(cat "$APP_DIR/.node_domain")"
-    printf '' | openssl s_client -connect 127.0.0.1:8443 -servername "$domain" -tls1_2 2>/dev/null \
-      | awk '/Protocol  :|Cipher    :|Verify return code:/{print "  "$0}' || true
-  fi
-  printf '\nCert mount in remnanode:\n'
-  docker exec remnanode sh -c 'test -s /etc/xray/certs/fullchain.pem && test -s /etc/xray/certs/privkey.pem && echo "  OK /etc/xray/certs"' 2>/dev/null || warn "Сертификаты внутри remnanode не подтверждены"
+  if [[ -r "$APP_DIR/.node_domain" ]]; then local domain; domain="$(cat "$APP_DIR/.node_domain")"; printf '' | openssl s_client -connect 127.0.0.1:8443 -servername "$domain" -tls1_2 2>/dev/null | awk '/Protocol  :|Cipher    :|Verify return code:/{print "  "$0}' || true; fi
+  printf '\nCert mount in remnanode:\n'; docker exec remnanode sh -c 'test -s /etc/xray/certs/fullchain.pem && test -s /etc/xray/certs/privkey.pem && echo "  OK /etc/xray/certs"' 2>/dev/null || warn "Сертификаты внутри remnanode не подтверждены"
   [[ -r "$APP_DIR/config-profile-public.txt" ]] && { printf '\nProfile:\n'; sed 's/^/  /' "$APP_DIR/config-profile-public.txt"; }
   echo '#################### КОНЕЦ ВЫВОДА: NODE STATUS ####################'
   pause_prompt
@@ -207,10 +169,7 @@ run_legacy_tools(){
   warn "Оно оставлено только для Telemt, диагностики и старых сервисных функций."
   printf 'Продолжить? [y/N]: '
   local answer; read -r answer
-  case "${answer:-N}" in
-    [Yy]*) ensure_legacy; bash "$LEGACY_DIR/setup_node_legacy.sh" ;;
-    *) return ;;
-  esac
+  case "${answer:-N}" in [Yy]*) ensure_legacy; bash "$LEGACY_DIR/setup_node_legacy.sh" ;; *) return ;; esac
 }
 
 main_menu(){
@@ -219,30 +178,10 @@ main_menu(){
     printf '%b============================================================%b\n' "$C" "$N"
     printf '%b  REMNANODE PRODUCTION · XHTTP + REALITY · TCP/443%b\n' "$C" "$N"
     printf '%b============================================================%b\n' "$C" "$N"
-    if [[ -f "$APP_DIR/docker-compose.yml" ]]; then
-      printf 'Нода: %bустановлена%b\n' "$G" "$N"
-    else
-      printf 'Нода: %bне установлена%b\n' "$Y" "$N"
-    fi
-    printf '\n  1) Полная установка / переустановка production-схемы\n'
-    printf '  2) Remnawave Config Profile / Hysteria2\n'
-    printf '  3) SelfSteal: STREAM / RADIO\n'
-    printf '  4) Статус и диагностика\n'
-    printf '  5) Legacy-инструменты (Telemt и старые сервисные функции)\n'
-    printf '  9) Полная очистка старого Remna/Proxy-стека до нуля\n'
-    printf '  0) Выход\n\n'
-    printf 'Выбор [0]: '
+    if [[ -f "$APP_DIR/docker-compose.yml" ]]; then printf 'Нода: %bустановлена%b\n' "$G" "$N"; else printf 'Нода: %bне установлена%b\n' "$Y" "$N"; fi
+    printf '\n  1) Полная установка / переустановка production-схемы\n  2) Remnawave Config Profile / Hysteria2\n  3) SelfSteal: STREAM / RADIO\n  4) Статус и диагностика\n  5) Legacy-инструменты (Telemt и старые сервисные функции)\n  9) Полная очистка старого Remna/Proxy-стека до нуля\n  0) Выход\n\nВыбор [0]: '
     local choice; read -r choice; choice=${choice:-0}
-    case "$choice" in
-      1) run_full_install ;;
-      2) run_profile_manager ;;
-      3) run_selfsteal_manager ;;
-      4) show_status ;;
-      5) run_legacy_tools ;;
-      9) run_zero_reset ;;
-      0) return 0 ;;
-      *) warn "Неизвестный пункт"; sleep 1 ;;
-    esac
+    case "$choice" in 1) run_full_install ;; 2) run_profile_manager ;; 3) run_selfsteal_manager ;; 4) show_status ;; 5) run_legacy_tools ;; 9) run_zero_reset ;; 0) return 0 ;; *) warn "Неизвестный пункт"; sleep 1 ;; esac
   done
 }
 
