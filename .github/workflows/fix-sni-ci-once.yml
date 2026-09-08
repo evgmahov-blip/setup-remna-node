@@ -19,7 +19,7 @@ jobs:
           ref: fix/xhttp-raw-hysteria-from-july7
           fetch-depth: 0
 
-      - name: Patch SNI parser and CI read permission
+      - name: Patch SNI parser and repin modules
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -32,14 +32,6 @@ jobs:
           if old not in text:
               raise SystemExit('expected SNI regexp not found')
           manager.write_text(text.replace(old, new, 1))
-
-          ci = Path('.github/workflows/transport-profile-ci.yml')
-          text = ci.read_text()
-          old = 'count="$(sudo wc -l < "$T/reality-targets.cache")"'
-          new = 'count="$(sudo wc -l "$T/reality-targets.cache" | awk \'{print $1}\')"'
-          if old not in text:
-              raise SystemExit('expected CI count command not found')
-          ci.write_text(text.replace(old, new, 1))
           PY
 
           bash -n production/remnawave-transport-manager.sh
@@ -52,8 +44,8 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add production/remnawave-transport-manager.sh production/modules.sha256 .github/workflows/transport-profile-ci.yml
-          git commit -m 'Fix mawk SNI parser warning and CI cache read'
+          git add production/remnawave-transport-manager.sh production/modules.sha256
+          git commit -m 'Fix mawk SNI parser warning'
           MODULE_REF="$(git rev-parse HEAD)"
 
           python3 - "$MODULE_REF" <<'PY'
@@ -85,5 +77,5 @@ jobs:
 
           bash -n setup_node_next.sh
           git add setup_node_next.sh
-          git commit -m 'Advance immutable module pin after SNI fix'
+          git commit -m 'Advance immutable module pin after SNI parser fix'
           git push origin HEAD:fix/xhttp-raw-hysteria-from-july7
