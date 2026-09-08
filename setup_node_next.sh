@@ -2,13 +2,21 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_BRANCH="${REMNANODE_REPO_REF:-fix/xhttp-raw-hysteria-from-july7}"
+MODULE_REF="${REMNANODE_REPO_REF:-b3ac83641968df9c8ffe5d4eb5fdc93242e98e1c}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
-MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_BRANCH}"
+MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
 LEGACY_RAW="https://raw.githubusercontent.com/${REPO}/${LEGACY_COMMIT}"
 WORK_DIR="${WORK_DIR:-/opt/remnanode/next-installer}"
 APP_DIR="${APP_DIR:-/opt/remnanode}"
+LEGACY_SHA256="aa79bc94916d41770b18dbad2ca0890123fc64cd5ce397841ca9f92e05dc67bf"
+
+declare -A MODULE_SHA256=(
+  [production/remnawave-transport-manager.sh]="a72249e6c0ed42a11092137975732c3efa111fe81594c62937193907bfa8087f"
+  [production/xhttp-signature-manager.sh]="8f9a670605bb2c24710844051e9da7b9d25bd33f49f305f6cb7d0c29bad55e87"
+  [production/rkn-watcher-manager.sh]="c8f48b1aeabfc5a6ae29c0ca80569a2089b0a6a6eaa8c30c0f8bc8092e46cfd4"
+  [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
+)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,12 +28,15 @@ WHITE='\033[1;37m'
 GRAY='\033[38;5;244m'
 NC='\033[0m'
 
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  printf '%b\n' "${RED}[ОШИБКА]${NC} Запусти от root"
-  exit 1
-fi
-
-mkdir -p "$WORK_DIR"
+preflight(){
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    printf '%b\n' "${RED}[ОШИБКА]${NC} Запусти от root"
+    return 1
+  fi
+  [[ "$MODULE_REF" =~ ^[0-9a-f]{40}$ ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} MODULE_REF должен быть immutable 40-символьным commit SHA"; return 1; }
+  [[ "$LEGACY_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} LEGACY_COMMIT должен быть immutable 40-символьным commit SHA"; return 1; }
+  mkdir -p "$WORK_DIR"
+}
 
 pause(){
   echo
@@ -42,43 +53,89 @@ status_badge(){
 }
 
 fetch_url(){
-  local url="$1" dst="$2" label="$3"
-  if curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 45 "$url" -o "$dst"; then
-    chmod 0755 "$dst"
-    if bash -n "$dst"; then
-      return 0
-    fi
-    printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $label"
-  else
+  local url="$1" dst="$2" label="$3" want="${4:-}" got tmp
+  tmp="${dst}.part"
+  rm -f "$tmp"
+  if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 45 "$url" -o "$tmp"; then
+    rm -f "$tmp"
     printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось скачать: $url"
+    return 1
   fi
-  return 1
+
+  if [[ -n "$want" ]]; then
+    got="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    if [[ "$got" != "$want" ]]; then
+      rm -f "$tmp"
+      printf '%b\n' "${RED}[ОШИБКА]${NC} SHA256 не совпал для $label"
+      printf '%b\n' "${GRAY}  ожидали: $want${NC}"
+      printf '%b\n' "${GRAY}  получили: $got${NC}"
+      return 1
+    fi
+  fi
+
+  if ! bash -n "$tmp"; then
+    rm -f "$tmp"
+    printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $label"
+    return 1
+  fi
+
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dst"
 }
 
 fetch_module(){
-  local rel="$1" dst="$2"
-  fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel"
+  local rel="$1" dst="$2" want="${MODULE_SHA256[$1]:-}"
+  [[ -n "$want" ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} Нет эталонного SHA256 для $rel"; return 1; }
+  fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel@${MODULE_REF}" "$want"
 }
 
 run_legacy(){
   local f="$WORK_DIR/setup_node-legacy.sh"
   echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
   echo -e "${GRAY}Commit: ${LEGACY_COMMIT}${NC}"
-  fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" || return 1
+  fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
   bash "$f"
 }
 
 run_transport(){
   local f="$WORK_DIR/remnawave-transport-manager.sh"
-  local xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh"
+  local xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh" _sig_ok
   fetch_module "production/remnawave-transport-manager.sh" "$f" || return 1
-  APP_DIR="$APP_DIR" bash "$f" || return 1
+  APP_DIR="$APP_DIR" XHTTP_SIGNATURE_MODE=none bash "$f" || return 1
 
   if [[ "$(cat "$APP_DIR/.transport" 2>/dev/null || true)" == "xhttp" ]]; then
-    echo -e "${CYAN}[XHTTP]${NC} Добавляю сохранённую per-node сигнатуру и Host extra..."
     fetch_module "production/xhttp-signature-manager.sh" "$xhttp_sig" || return 1
-    APP_DIR="$APP_DIR" bash "$xhttp_sig"
+    APP_DIR="$APP_DIR" bash "$xhttp_sig" revert >/dev/null || return 1
+    echo
+    echo -e "${YELLOW}[ВНИМАНИЕ]${NC} XHTTP signature — общий секрет клиента и сервера."
+    echo -e "${YELLOW}[ВНИМАНИЕ]${NC} Пока не подтверждено, что Remnawave переносит extra в клиент один-в-один,"
+    echo -e "${YELLOW}[ВНИМАНИЕ]${NC} базовый профиль оставляем БЕЗ signature."
+    read -r -p 'Применить signature сейчас? Введите SIGN (пусто = пропустить): ' _sig_ok
+    if [[ "$_sig_ok" == 'SIGN' ]]; then
+      APP_DIR="$APP_DIR" bash "$xhttp_sig" apply
+    else
+      echo -e "${GREEN}[OK]${NC} XHTTP оставлен без signature — совместимый режим для первого live-теста."
+    fi
   fi
+}
+
+run_xhttp_signature(){
+  local f="$WORK_DIR/xhttp-signature-manager.sh" choice
+  fetch_module "production/xhttp-signature-manager.sh" "$f" || return 1
+  echo
+  echo -e "${CYAN}[XHTTP SIGNATURE]${NC}"
+  echo '  1) Применить сохранённую signature + Host extra'
+  echo '  2) Снять signature с профиля (revert)'
+  echo '  3) Показать сохранённую signature'
+  echo '  0) Назад'
+  read -r -p 'Выбор [0]: ' choice
+  case "${choice:-0}" in
+    1) APP_DIR="$APP_DIR" bash "$f" apply ;;
+    2) APP_DIR="$APP_DIR" bash "$f" revert ;;
+    3) APP_DIR="$APP_DIR" bash "$f" show ;;
+    0) return 0 ;;
+    *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; return 1 ;;
+  esac
 }
 
 run_rkn(){
@@ -115,13 +172,26 @@ show_profiles(){
   echo -e "${CYAN}║                  REMNAWAVE PROFILES / HOSTS                ║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo
-  local d="$APP_DIR/remnawave-profiles"
+  local d="$APP_DIR/remnawave-profiles" active="" f base active_file=""
   if [[ ! -d "$d" ]]; then
     echo 'Профили ещё не генерировались.'
     pause
     return 0
   fi
-  find "$d" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
+  active="$(cat "$APP_DIR/.transport" 2>/dev/null || true)"
+  case "$active" in
+    xhttp) active_file='xhttp-reality.json' ;;
+    raw) active_file='raw-reality.json' ;;
+    hysteria) active_file='hysteria2-tls.json' ;;
+  esac
+  while IFS= read -r f; do
+    base="$(basename "$f")"
+    if [[ "$base" == "$active_file" ]]; then
+      echo -e "${GREEN}[АКТИВЕН]${NC} $base"
+    else
+      echo "          $base"
+    fi
+  done < <(find "$d" -maxdepth 1 -type f ! -name '.*' -print 2>/dev/null | sort)
   echo
   echo -e "${GRAY}Каталог:${NC} $d"
   pause
@@ -145,7 +215,7 @@ show_status(){
 
   echo
   printf '  %-22s %s\n' 'Stable base:' "$LEGACY_COMMIT"
-  printf '  %-22s %s\n' 'Module branch:' "$MODULE_BRANCH"
+  printf '  %-22s %s\n' 'Module commit:' "$MODULE_REF"
   printf '  %-22s %s\n' 'Node domain:' "$(cat "$APP_DIR/.node_domain" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Legacy protocol:' "$(cat "$APP_DIR/.protocol" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Transport profile:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
@@ -172,13 +242,14 @@ menu(){
     echo -e "${CYAN}  [TRANSPORT / REMNAWAVE]${NC}"
     echo -e "   ${WHITE}3)${NC} ⚡ Создать Config Profile + Host для XHTTP / RAW / Hysteria2"
     echo -e "   ${WHITE}4)${NC} 📁 Показать созданные профили и Host-подсказки"
+    echo -e "   ${WHITE}5)${NC} 🧬 XHTTP signature — применить / снять / показать"
     echo
     echo -e "${MAGENTA}  [REALITY / SNI]${NC}"
-    echo -e "   ${WHITE}5)${NC} 🎭 Показать текущий SNI / target / состояние пула"
+    echo -e "   ${WHITE}6)${NC} 🎭 Показать текущий SNI / target / состояние пула"
     echo -e "      ${GRAY}Смена SNI — только вручную внутри пункта 3, без автопереключений.${NC}"
     echo
     echo -e "${YELLOW}  [SECURITY]${NC}"
-    echo -e "   ${WHITE}6)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
+    echo -e "   ${WHITE}7)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
     echo
     echo -e "${BLUE}  [СТАРЫЕ ПРОВЕРЕННЫЕ ФУНКЦИИ]${NC}"
     echo -e "      ${GRAY}SelfSteal сайты, SSL, Telemt, Xray version, UFW, IPv6, логи, тесты — пункт 1.${NC}"
@@ -187,19 +258,25 @@ menu(){
     echo -e "   ${WHITE}0)${NC} Закрыть меню"
     echo
     echo -e "${GRAY}────────────────────────────────────────────────────────────────────${NC}"
-    read -r -p 'Выбери действие [0-6]: ' choice
+    read -r -p 'Выбери действие [0-7]: ' choice
 
     case "${choice:-0}" in
       1) run_legacy; pause ;;
       2) show_status ;;
       3) run_transport; pause ;;
       4) show_profiles ;;
-      5) show_sni ;;
-      6) run_rkn; pause ;;
+      5) run_xhttp_signature; pause ;;
+      6) show_sni ;;
+      7) run_rkn; pause ;;
       0) return 0 ;;
       *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; sleep 1 ;;
     esac
   done
 }
 
-menu
+main(){
+  preflight || return 1
+  menu
+}
+
+main "$@"
