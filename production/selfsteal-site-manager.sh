@@ -9,6 +9,7 @@ RADIO_ADMIN_FILE="$APP_DIR/.selfsteal_radio_admin"
 
 STREAM_REF="ec5ffa5c26e57c6f6b2060bbf6743d3921c05500"
 STREAM_URL="https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${STREAM_REF}/selfsteal/stream/index.html"
+STREAM_HEALTH_URL="https://stream.deepbeat.ru:8443/health"
 RADIO_REF="276908d5fed3faaadfb3a331ab7acad18824a9b9"
 RADIO_BASE="https://raw.githubusercontent.com/Balbuto/radio-stub-site/${RADIO_REF}"
 
@@ -58,6 +59,24 @@ deploy_stream(){
     return 1
   fi
 
+  # STREAM хранится в нашем репозитории. Для списка эфиров ходим
+  # напрямую в публичный Rocket Streaming Server, без прокси через *.2rdp.ru.
+  sed -i \
+    "s#const HEALTH_API = \"/api/deepbeat-health\";#const HEALTH_API = \"${STREAM_HEALTH_URL}\";#" \
+    "$tmpdir/index.html"
+
+  if ! grep -Fq "const HEALTH_API = \"${STREAM_HEALTH_URL}\";" "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    fail 'Не удалось настроить прямой STREAM health endpoint'
+    return 1
+  fi
+
+  if grep -Eqi '(^|[^[:alnum:]._-])([[:alnum:]_-]+\.)*2rdp\.ru([^[:alnum:]._-]|$)' "$tmpdir/index.html"; then
+    rm -rf -- "$tmpdir"
+    fail 'STREAM содержит зависимость от 2rdp.ru'
+    return 1
+  fi
+
   prepare_www
   install -m 0644 "$tmpdir/index.html" "$WWW_DIR/index.html"
   printf 'stream\n' > "$STATE_FILE"
@@ -65,7 +84,7 @@ deploy_stream(){
   rm -f "$RADIO_ADMIN_FILE"
   rm -rf -- "$tmpdir"
   restart_nginx
-  log "[OK] SelfSteal сайт: STREAM (pinned $STREAM_REF)"
+  log "[OK] SelfSteal сайт: STREAM (pinned $STREAM_REF, direct health)"
 }
 
 deploy_radio(){
