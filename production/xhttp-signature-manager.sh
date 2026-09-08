@@ -15,7 +15,7 @@ need(){ command -v "$1" >/dev/null 2>&1 || fail "Не найдено: $1"; }
 random_hex(){ openssl rand -hex "$1"; }
 
 new_signature(){
-  local pick seq session pad_header pad_key pad_min pad_max max_concurrency max_connections reuse lifetime
+  local pick seq session pad_header pad_key pad_min pad_max max_concurrency reuse lifetime
   pick=$(( 0x$(random_hex 1) % 4 ))
   case "$pick" in
     0)
@@ -31,7 +31,6 @@ new_signature(){
   pad_min=$((96 + 0x$(random_hex 1) % 256))
   pad_max=$((pad_min + 384 + 0x$(random_hex 1) % 768))
   max_concurrency=$((1 + 0x$(random_hex 1) % 4))
-  max_connections=$((1 + 0x$(random_hex 1) % 3))
   reuse=$((4 + 0x$(random_hex 1) % 13))
   lifetime=$((180000 + 0x$(random_hex 2) % 420001))
 
@@ -42,7 +41,6 @@ new_signature(){
     --arg pad_key "$pad_key" \
     --arg padding "${pad_min}-${pad_max}" \
     --argjson mc "$max_concurrency" \
-    --argjson mconn "$max_connections" \
     --argjson reuse "$reuse" \
     --argjson life "$lifetime" \
     '{
@@ -62,7 +60,6 @@ new_signature(){
       xPaddingBytes: $padding,
       xmux: {
         maxConcurrency: $mc,
-        maxConnections: $mconn,
         cMaxReuseTimes: $reuse,
         cMaxLifetimeMs: $life
       }
@@ -71,7 +68,7 @@ new_signature(){
 }
 
 ensure_signature(){
-  if [[ -s "$SIGNATURE_FILE" ]] && jq -e 'type == "object" and .seqKey and .sessionIDKey and .sessionIDTable and .xPaddingBytes' "$SIGNATURE_FILE" >/dev/null 2>&1; then
+  if [[ -s "$SIGNATURE_FILE" ]] && jq -e 'type == "object" and .seqKey and .sessionIDKey and .sessionIDTable and .xPaddingBytes and ((.xmux.maxConnections? // null) == null)' "$SIGNATURE_FILE" >/dev/null 2>&1; then
     return 0
   fi
   new_signature
@@ -80,7 +77,7 @@ ensure_signature(){
 patch_profile(){
   local tmp
   [[ -s "$PROFILE_FILE" ]] || fail "XHTTP profile не найден: $PROFILE_FILE"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$PROFILE_DIR/.xhttp-signature.XXXXXX")"
   jq --slurpfile extra "$SIGNATURE_FILE" \
     '.inbounds[0].streamSettings.xhttpSettings.extra = $extra[0]' \
     "$PROFILE_FILE" > "$tmp"
