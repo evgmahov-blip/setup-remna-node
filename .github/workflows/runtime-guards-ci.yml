@@ -199,19 +199,21 @@ jobs:
           T="$(mktemp -d)"
           sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
           source "$T/setup-lib.sh"
-          LOG="$T/log"; : > "$LOG"; IPT_JUMP=1
-          systemctl(){ echo "systemctl $*" >> "$LOG"; return 0; }
-          rm(){ echo "rm $*" >> "$LOG"; return 0; }
+          LOG="$T/log"; STATE="$T/ipt-state"
+          : > "$LOG"; printf '1\n' > "$STATE"
+          systemctl(){ printf 'systemctl'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"
+          rm(){ printf 'rm'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"
           iptables(){
             case "$1" in
-              -C) (( IPT_JUMP == 1 )) ;;
-              -D) IPT_JUMP=0; echo "iptables $*" >> "$LOG"; return 0 ;;
-              -F|-X) echo "iptables $*" >> "$LOG"; return 0 ;;
+              -C) test "$(cat "$STATE")" = 1 ;;
+              -D) printf '0\n' > "$STATE"; printf 'iptables'; printf ' %s' "$@"; printf '\n' >> "$LOG"; return 0 ;;
+              -F|-X) printf 'iptables'; printf ' %s' "$@"; printf '\n' >> "$LOG"; return 0 ;;
               *) return 0 ;;
             esac
           }
           cleanup_rkn_watch_after_uninstall
-          test "$IPT_JUMP" -eq 0
+          cat "$LOG"
+          test "$(cat "$STATE")" = 0
           grep -q 'remnanode-rkn-scanner-update.timer' "$LOG"
           grep -q 'remnanode-rkn-scanner-boot.service' "$LOG"
           grep -q 'iptables -D INPUT -j REMNA_RKN_SCANNERS' "$LOG"
