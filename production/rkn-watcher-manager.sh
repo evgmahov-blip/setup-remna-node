@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 RKN_VENDOR_DIR="${RKN_VENDOR_DIR:-$APP_DIR/vendor/rkn-watcher}"
 RKN_SAFE_DIR="${RKN_SAFE_DIR:-$APP_DIR/rkn-safe}"
 GUARD_SCRIPT="$RKN_SAFE_DIR/scanner-guard.sh"
+SAFE_UPDATE_SCRIPT="$RKN_SAFE_DIR/safe-update.sh"
 ALLOW_FILE="/etc/rkn-watcher/remnanode-scanner-allow.txt"
 SETTINGS_FILE="/etc/rkn-watcher/settings.conf"
 WHITELIST_FILE="/etc/rkn-watcher/whitelist.json"
@@ -30,9 +31,7 @@ session_ip(){
 }
 
 panel_ip(){
-  if [[ -r "$APP_DIR/.panel_ip" ]]; then
-    tr -d '[:space:]' < "$APP_DIR/.panel_ip"
-  fi
+  [[ -r "$APP_DIR/.panel_ip" ]] && tr -d '[:space:]' < "$APP_DIR/.panel_ip"
   return 0
 }
 
@@ -58,18 +57,25 @@ PY
 fetch_upstream(){
   local tmp file
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
 
   for file in "${RKN_FILES[@]}"; do
-    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 \
-      "$RKN_RAW_BASE/$file" -o "$tmp/$file" || { err "Не удалось скачать $file"; return 1; }
+    if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 \
+      "$RKN_RAW_BASE/$file" -o "$tmp/$file"; then
+      rm -rf "$tmp"
+      err "Не удалось скачать $file"
+      return 1
+    fi
   done
 
-  (
+  if ! (
     cd "$tmp"
     grep -E '  (installer\.sh|rkn-watcher\.sh|config_tool\.py|geoip_apply\.py)$' SHA256SUMS > SHA256SUMS.required
     sha256sum -c SHA256SUMS.required
-  ) || { err 'Контрольные суммы RKN Watcher не совпали'; return 1; }
+  ); then
+    rm -rf "$tmp"
+    err 'Контрольные суммы RKN Watcher не совпали'
+    return 1
+  fi
 
   mkdir -p "$RKN_VENDOR_DIR"
   install -m 0755 "$tmp/installer.sh" "$RKN_VENDOR_DIR/installer.sh"
@@ -79,6 +85,7 @@ fetch_upstream(){
   install -m 0644 "$tmp/SHA256SUMS" "$RKN_VENDOR_DIR/SHA256SUMS"
   install -m 0644 "$tmp/VERSION" "$RKN_VENDOR_DIR/VERSION"
   printf '%s\n' "$RKN_UPSTREAM_REF" > "$RKN_VENDOR_DIR/.upstream-ref"
+  rm -rf "$tmp"
   say "[OK] RKN Watcher подготовлен из фиксированного upstream commit $RKN_UPSTREAM_REF"
 }
 
@@ -188,11 +195,18 @@ IFS=$'\n\t'
 
 CHAIN="REMNA_RKN_SCANNERS"
 ALLOW_FILE="/etc/rkn-watcher/remnanode-scanner-allow.txt"
+IPSET_STATE_FILE="/var/lib/rkn-watcher/state/ipset.conf"
 
 remove_jump(){
   while iptables -C INPUT -j "$CHAIN" >/dev/null 2>&1; do
     iptables -D INPUT -j "$CHAIN" >/dev/null 2>&1 || break
   done
+}
+
+restore_scanner_set(){
+  if ! ipset list TSPUIPS >/dev/null 2>&1 && [[ -r "$IPSET_STATE_FILE" ]]; then
+    ipset restore -exist < "$IPSET_STATE_FILE" >/dev/null 2>&1 || true
+  fi
 }
 
 scanner_count(){
@@ -201,6 +215,7 @@ scanner_count(){
 
 apply_guard(){
   local count ip
+  restore_scanner_set
   count="$(scanner_count)"
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   if (( count < 1 )); then
@@ -255,6 +270,24 @@ EOF_GUARD
   chmod 0755 "$GUARD_SCRIPT"
 }
 
+write_safe_update_script(){
+  cat > "$SAFE_UPDATE_SCRIPT" <<EOF_UPDATE_SCRIPT
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cat > "$SETTINGS_FILE" <<'EOF_SETTINGS'
+FILTER_PORTS="443"
+LOG_RST="n"
+AUTO_UPDATE="n"
+ENABLE_TSPUBLOCK="n"
+ENABLE_GOVIPS="n"
+EOF_SETTINGS
+/opt/rkn-watcher/config_tool.py set-enabled false >/dev/null 2>&1 || true
+/usr/local/bin/rkn-watcher update --quiet
+"$GUARD_SCRIPT" apply
+EOF_UPDATE_SCRIPT
+  chmod 0755 "$SAFE_UPDATE_SCRIPT"
+}
+
 write_systemd_units(){
   cat > "/etc/systemd/system/$BOOT_UNIT" <<EOF_BOOT
 [Unit]
@@ -264,7 +297,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/rkn-watcher apply --quiet
 ExecStart=$GUARD_SCRIPT apply
 RemainAfterExit=yes
 
@@ -274,14 +306,13 @@ EOF_BOOT
 
   cat > "/etc/systemd/system/$UPDATE_UNIT" <<EOF_UPDATE
 [Unit]
-Description=Remnanode RKN scanner list update
+Description=Remnanode RKN scanner list safe update
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/rkn-watcher update --quiet
-ExecStartPost=$GUARD_SCRIPT apply
+ExecStart=$SAFE_UPDATE_SCRIPT
 EOF_UPDATE
 
   cat > "/etc/systemd/system/$UPDATE_TIMER" <<EOF_TIMER
@@ -322,43 +353,26 @@ schedule_rollback(){
 }
 
 verify_guard(){
-  local rules ssh_ip panel port
+  local rules port
   iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || { err 'Нет INPUT jump в scanner guard'; return 1; }
   rules="$(iptables -S REMNA_RKN_SCANNERS 2>/dev/null || true)"
   grep -Fq -- '--dports 80,443' <<<"$rules" || { err 'Нет scanner DROP для TCP 80/443'; return 1; }
   grep -Fq -- '-p udp' <<<"$rules" || { err 'Нет scanner DROP для UDP'; return 1; }
   grep -Fq -- '--dport 443' <<<"$rules" || { err 'Нет scanner DROP для UDP/443'; return 1; }
   grep -Fq -- '--match-set TSPUIPS src' <<<"$rules" || { err 'Scanner guard не привязан к TSPUIPS'; return 1; }
-  if grep -Eq -- '--dport (22|2222)( |$)|--dports [^ ]*(22|2222)' <<<"$rules"; then
-    err 'Scanner guard неожиданно затрагивает SSH/control port'
-    return 1
-  fi
 
-  ssh_ip="$(session_ip)"
-  panel="$(panel_ip)"
   port="$(node_port)"
   if [[ "$port" == '80' || "$port" == '443' ]]; then
     err "Node control port $port пересекается с scanner-protection ports; SAFE mode не подтверждаю"
     return 1
   fi
-  printf '[OK] Current SSH IP: %s\n' "${ssh_ip:-не найден}"
-  printf '[OK] Panel IP: %s\n' "${panel:-не найден}"
+  printf '[OK] Current SSH IP: %s\n' "$(session_ip || true)"
+  printf '[OK] Panel IP: %s\n' "$(panel_ip || true)"
   printf '[OK] Node control port не фильтруется: %s\n' "${port:-не найден}"
-  return 0
-}
-
-refresh_lists(){
-  [[ -x /usr/local/bin/rkn-watcher ]] || { err 'RKN Watcher не установлен'; return 1; }
-  if /usr/local/bin/rkn-watcher update --quiet; then
-    "$GUARD_SCRIPT" apply
-  else
-    err 'Обновление списков не прошло; старый рабочий TSPUIPS не заменяем'
-    return 1
-  fi
 }
 
 activate_safe(){
-  local answer=""
+  local answer='n'
   [[ -x "$GUARD_SCRIPT" ]] || { err 'Scanner guard не установлен'; return 1; }
   record_safe_allow_ips
   write_safe_config
@@ -373,38 +387,51 @@ activate_safe(){
 
   echo
   echo '[SAFE] Защита от известных TSPU/Skipa scanners уже активна.'
-  echo '[SAFE] Она режет только tcp/80, tcp/443 и udp/443 для IP из TSPUIPS.'
-  echo '[SAFE] SSH и control port не входят в правила.'
-  echo '[SAFE] Если не подтвердить, через 120 секунд guard будет снят автоматически.'
+  echo '[SAFE] DROP только tcp/80, tcp/443 и udp/443 для IP из TSPUIPS.'
+  echo '[SAFE] Если выбрать n/No или потерять сессию, через 120 секунд guard будет снят.'
 
-  if [[ "${RKN_ASSUME_KEEP:-0}" == "1" ]]; then
-    answer='KEEP'
+  if [[ "${RKN_ASSUME_KEEP:-0}" == '1' ]]; then
+    answer='y'
   elif [[ -t 0 ]]; then
-    read -r -p 'Оставить защиту постоянно? Введите KEEP: ' answer
+    read -r -p 'Оставить защиту постоянно? [Y/n]: ' answer || true
+    answer="${answer:-y}"
   fi
 
-  if [[ "$answer" == 'KEEP' ]]; then
-    cancel_rollback
-    "$GUARD_SCRIPT" apply
-    enable_safe_autostart
-    printf 'active\n' > "$ACTIVE_STATE"
-    chmod 600 "$ACTIVE_STATE"
-    echo '[OK] SAFE SCANNER MODE зафиксирован: boot restore + daily update включены.'
-  else
-    disable_all_autostart
-    rm -f "$ACTIVE_STATE"
-    echo '[INFO] KEEP не получен. Автооткат оставлен; защита будет снята максимум через 120 секунд.'
-  fi
+  case "${answer,,}" in
+    y|yes)
+      cancel_rollback
+      "$GUARD_SCRIPT" apply
+      enable_safe_autostart
+      printf 'active\n' > "$ACTIVE_STATE"
+      chmod 600 "$ACTIVE_STATE"
+      echo '[OK] SAFE SCANNER MODE зафиксирован: boot restore + daily update включены.'
+      ;;
+    *)
+      disable_all_autostart
+      rm -f "$ACTIVE_STATE"
+      echo '[INFO] Выбрано No. Автооткат оставлен; защита будет снята максимум через 120 секунд.'
+      ;;
+  esac
+}
+
+refresh_lists(){
+  [[ -x "$SAFE_UPDATE_SCRIPT" ]] || { err 'SAFE updater не установлен'; return 1; }
+  write_safe_config
+  "$SAFE_UPDATE_SCRIPT"
 }
 
 install_safe(){
   echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER SAFE INSTALL ####################'
-  fetch_upstream
-  install_dependencies
+  if ! fetch_upstream || ! install_dependencies; then
+    echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SAFE INSTALL ####################'
+    return 1
+  fi
+
   install_upstream_files
   disable_all_autostart
   write_safe_config
   write_guard_script
+  write_safe_update_script
   write_systemd_units
 
   echo '[*] Загружаю scanner lists. Upstream TSPUBLOCK/GOVIPS/GeoIP firewall hooks выключены.'
@@ -422,19 +449,18 @@ install_safe(){
     return 1
   fi
   echo "[OK] TSPUIPS загружен: $count записей"
-  echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SAFE INSTALL ####################'
-  activate_safe
+
+  if activate_safe; then
+    echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SAFE INSTALL ####################'
+  else
+    local rc=$?
+    echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SAFE INSTALL ####################'
+    return "$rc"
+  fi
 }
 
 show_status(){
   echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER STATUS ####################'
-  if [[ -x /usr/local/bin/rkn-watcher ]]; then
-    /usr/local/bin/rkn-watcher status --quiet 2>/dev/null || /usr/local/bin/rkn-watcher status || true
-  else
-    echo 'RKN Watcher: не установлен'
-  fi
-
-  echo
   if [[ -x "$GUARD_SCRIPT" ]]; then
     "$GUARD_SCRIPT" status || true
   else
@@ -445,15 +471,16 @@ show_status(){
   printf 'Panel IP: %s\n' "$(panel_ip || true)"
   printf 'Node control port: %s\n' "$(node_port || true)"
   printf 'Pinned upstream: %s\n' "$RKN_UPSTREAM_REF"
+  systemctl is-enabled "$BOOT_UNIT" 2>/dev/null | sed 's/^/Safe boot restore: /' || echo 'Safe boot restore: disabled'
   systemctl is-enabled "$UPDATE_TIMER" 2>/dev/null | sed 's/^/Safe update timer: /' || echo 'Safe update timer: disabled'
   echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER STATUS ####################'
 }
 
 run_upstream_menu(){
-  local answer
+  local answer=''
   echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER ADVANCED WARNING ####################'
   echo '[WARN] ADVANCED upstream menu может включить широкие TSPUBLOCK/GOVIPS/GeoIP правила.'
-  echo '[WARN] SAFE SCANNER MODE использует отдельную узкую цепочку только для известных scanner IP.'
+  echo '[WARN] SAFE timer при следующем обновлении снова принудительно вернёт безопасные настройки.'
   echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER ADVANCED WARNING ####################'
   read -r -p 'Открыть ADVANCED upstream menu? Введите UPSTREAM: ' answer
   [[ "$answer" == 'UPSTREAM' ]] || { say '[INFO] Отменено'; return 0; }
