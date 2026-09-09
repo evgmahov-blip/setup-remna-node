@@ -30,6 +30,9 @@ jobs:
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
           grep -q '/data/streams.json' production/selfsteal-site-manager.sh
           grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
+          if grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh); then
+            echo 'Unexpected runtime SelfSteal patch path' >&2; exit 1
+          fi
 
       - name: Fresh default is RANDOM pinned unique template
         run: |
@@ -41,8 +44,12 @@ jobs:
           STATE="$(sudo cat "$T/.selfsteal_site")"
           [[ "$STATE" == template:* ]]
           sudo test -s "$T/www/index.html"
-          ! sudo find "$T/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .
-          ! sudo find "$T/www" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .
+          if sudo find "$T/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then
+            echo 'uniquify manifest leaked' >&2; exit 1
+          fi
+          if sudo find "$T/www" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .; then
+            echo 'README leaked' >&2; exit 1
+          fi
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
           test "$(sudo cat "$T/.selfsteal_site")" = "$STATE"
 
@@ -55,14 +62,14 @@ jobs:
           printf 'node2.example.com\n' > "$T2/.node_domain"
           sudo env APP_DIR="$T1" WWW_DIR="$T1/www" bash production/selfsteal-site-manager.sh stream
           sudo env APP_DIR="$T2" WWW_DIR="$T2/www" bash production/selfsteal-site-manager.sh stream
-          ! sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T1/www"
-          ! sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T2/www"
+          if sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T1/www"; then echo 'external dependency leaked on node1' >&2; exit 1; fi
+          if sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T2/www"; then echo 'external dependency leaked on node2' >&2; exit 1; fi
           sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T1/www/index.html"
           sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T1/www/index.html"
           sudo grep -Fq 'const STREAM_ORIGIN = "https://node1.example.com";' "$T1/www/index.html"
           sudo jq -e '(.mounts | length) >= 4 and (.mounts | length) <= 8' "$T1/www/data/streams.json"
           sudo jq -e '.history == []' "$T1/www/data/history.json"
-          ! sudo find "$T1/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .
+          if sudo find "$T1/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
           H1="$(sudo sha256sum "$T1/www/index.html" | cut -d' ' -f1)"
           H2="$(sudo sha256sum "$T2/www/index.html" | cut -d' ' -f1)"
           test "$H1" != "$H2"
@@ -81,7 +88,7 @@ jobs:
           ADMIN1="$(sudo cat "$T/.selfsteal_radio_admin")"
           [[ "$ADMIN1" =~ ^manage-[0-9a-f]{24}\.html$ ]]
           sudo test -s "$T/www/$ADMIN1"
-          ! sudo grep -q 'Управление' "$T/www/index.html"
+          if sudo grep -q 'Управление' "$T/www/index.html"; then echo 'radio management link leaked into public page' >&2; exit 1; fi
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
           ADMIN2="$(sudo cat "$T/.selfsteal_radio_admin")"
           test "$ADMIN1" = "$ADMIN2"
@@ -96,8 +103,8 @@ jobs:
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh template endless-verify
           test "$(sudo cat "$T/.selfsteal_site")" = 'template:endless-verify'
           sudo test -s "$T/www/index.html"
-          ! sudo find "$T/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .
-          ! sudo find "$T/www" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .
+          if sudo find "$T/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
+          if sudo find "$T/www" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .; then echo 'README leaked' >&2; exit 1; fi
 
       - name: Pinned manager fetched by wrapper matches checksum
         run: |
