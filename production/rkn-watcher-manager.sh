@@ -371,8 +371,65 @@ verify_guard(){
   printf '[OK] Node control port не фильтруется: %s\n' "${port:-не найден}"
 }
 
+normalize_yes_no_answer(){
+  local value="${1-}" ascii=''
+  value="${value//$''/}"
+  value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  ascii="$(printf '%s' "$value" | tr 'A-Z' 'a-z')"
+  case "$ascii" in
+    ''|y|yes) printf 'yes'; return 0 ;;
+    n|no) printf 'no'; return 0 ;;
+  esac
+  case "$value" in
+    д|Д|да|Да|ДА) printf 'yes'; return 0 ;;
+    н|Н|нет|Нет|НЕТ) printf 'no'; return 0 ;;
+  esac
+  printf 'invalid'
+  return 1
+}
+
+rkn_input_selftest(){
+  local failed=0 got input expected encoded
+  while IFS='|' read -r encoded expected; do
+    case "$encoded" in
+      '<EMPTY>') input='' ;;
+      '<CRY>') input=$'y' ;;
+      *) input="$encoded" ;;
+    esac
+    got=''
+    if got="$(normalize_yes_no_answer "$input")" && [[ "$got" == "$expected" ]]; then
+      :
+    else
+      printf '[SELFTEST FAIL] input=%q expected=%s got=%s
+' "$input" "$expected" "${got:-ERROR}" >&2
+      failed=1
+    fi
+  done <<'EOF_CASES'
+<EMPTY>|yes
+y|yes
+Y|yes
+ y |yes
+yes|yes
+YES|yes
+<CRY>|yes
+д|yes
+ДА|yes
+n|no
+N|no
+ no |no
+нет|no
+НЕТ|no
+EOF_CASES
+  if normalize_yes_no_answer 'maybe' >/dev/null 2>&1; then
+    echo '[SELFTEST FAIL] invalid answer accepted' >&2
+    failed=1
+  fi
+  (( failed == 0 )) && echo '[OK] RKN confirmation input selftest'
+  return "$failed"
+}
+
 activate_safe(){
-  local answer='n'
+  local answer='no' raw=''
   [[ -x "$GUARD_SCRIPT" ]] || { err 'Scanner guard не установлен'; return 1; }
   record_safe_allow_ips
   write_safe_config
@@ -391,25 +448,38 @@ activate_safe(){
   echo '[SAFE] Если выбрать n/No или потерять сессию, через 120 секунд guard будет снят.'
 
   if [[ "${RKN_ASSUME_KEEP:-0}" == '1' ]]; then
-    answer='y'
+    answer='yes'
   elif [[ -t 0 ]]; then
-    read -r -p 'Оставить защиту постоянно? [Y/n]: ' answer || true
-    answer="${answer:-y}"
+    while true; do
+      raw=''
+      read -r -p 'Оставить защиту постоянно? [Y/n]: ' raw || raw='n'
+      if answer="$(normalize_yes_no_answer "$raw")"; then
+        break
+      fi
+      echo '[WARN] Неверный ответ. Введите y/yes или n/no.'
+    done
   fi
 
-  case "${answer,,}" in
-    y|yes)
+  case "$answer" in
+    yes)
       cancel_rollback
       "$GUARD_SCRIPT" apply
       enable_safe_autostart
-      printf 'active\n' > "$ACTIVE_STATE"
+      printf 'active
+' > "$ACTIVE_STATE"
       chmod 600 "$ACTIVE_STATE"
       echo '[OK] SAFE SCANNER MODE зафиксирован: boot restore + daily update включены.'
       ;;
-    *)
+    no)
       disable_all_autostart
       rm -f "$ACTIVE_STATE"
       echo '[INFO] Выбрано No. Автооткат оставлен; защита будет снята максимум через 120 секунд.'
+      ;;
+    *)
+      echo '[ERROR] Внутренняя ошибка нормализации ответа; оставляю rollback активным.' >&2
+      disable_all_autostart
+      rm -f "$ACTIVE_STATE"
+      return 1
       ;;
   esac
 }
@@ -537,6 +607,10 @@ main_menu(){
 }
 
 main(){
+  if [[ "${1:-}" == 'selftest-input' ]]; then
+    rkn_input_selftest
+    return $?
+  fi
   need_root
   case "${1:-menu}" in
     menu) main_menu ;;

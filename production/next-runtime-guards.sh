@@ -8,7 +8,7 @@ RKN_HEALTH_SERVICE="remnanode-rkn-scanner-health.service"
 RKN_HEALTH_TIMER="remnanode-rkn-scanner-health.timer"
 RKN_UFW_PATH="remnanode-rkn-scanner-ufw.path"
 RKN_HEALTH_SCRIPT="$APP_DIR/rkn-safe/health-check.sh"
-RKN_PATCHED_MANAGER_SHA256="a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244"
+RKN_PATCHED_MANAGER_SHA256="2d5838809881a00cac755b43606d7c929e7ba8f5786f64ebff849eb73edeb3e7"
 RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
 
 log(){ printf '%s\n' "$*"; }
