@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-717e145c0bc28612a97358fec90ff38e6ec14d1d}"
+MODULE_REF="${REMNANODE_REPO_REF:-18346ddfb24395fc11dcf67e895cd4460ab36178}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 REPO="evgmahov-blip/setup-remna-node"
@@ -16,10 +16,10 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
-  [production/selfsteal-site-manager.sh]="f2006f86dcc3bd2c60e45e540d935fdc57a8a0dca44320bac573b1445ccde2af"
+  [production/selfsteal-site-manager.sh]="92fccc97ea986c0fc09a1de2c2d8b7e7f3c614f369baf82808a6fc8d2629034d"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
-  [production/next-runtime-guards.sh]="6832fec731e4bf3b76c5c49e97ee857b1f7aafdf870f0090ab9be58103845dc4"
+  [production/next-runtime-guards.sh]="801296145878d1bf830b69bf709eac5db3cd714a18fcfd233ca2733590235d3a"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
@@ -41,25 +41,25 @@ fetch_url(){
   tmp="${dst}.part"
   rm -f "$tmp"
   if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 45 "$url" -o "$tmp"; then
-    rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось скачать: $url"; return 1
+    rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось скачать: $url" >&2; return 1
   fi
   if [[ -n "$want" ]]; then
     got="$(sha256sum "$tmp" | cut -d' ' -f1)"
-    [[ "$got" == "$want" ]] || { rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} SHA256 не совпал для $label"; return 1; }
+    [[ "$got" == "$want" ]] || { rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} SHA256 не совпал для $label" >&2; return 1; }
   fi
-  bash -n "$tmp" || { rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $label"; return 1; }
+  bash -n "$tmp" || { rm -f "$tmp"; printf '%b\n' "${RED}[ОШИБКА]${NC} Синтаксис не прошёл проверку: $label" >&2; return 1; }
   chmod 0755 "$tmp"; mv -f "$tmp" "$dst"
 }
 
 fetch_module(){
   local rel="$1" dst="$2" want="${MODULE_SHA256[$1]:-}"
-  [[ -n "$want" ]] || { echo "[ОШИБКА] Нет SHA256 для $rel"; return 1; }
+  [[ -n "$want" ]] || { echo "[ОШИБКА] Нет SHA256 для $rel" >&2; return 1; }
   fetch_url "${MODULE_RAW}/${rel}" "$dst" "$rel@${MODULE_REF}" "$want"
 }
 
 ensure_python3_for_patch(){
   command -v python3 >/dev/null 2>&1 && return 0
-  command -v apt-get >/dev/null 2>&1 || { echo -e "${RED}[ОШИБКА]${NC} Для runtime guards нужен python3"; return 1; }
+  command -v apt-get >/dev/null 2>&1 || { echo -e "${RED}[ОШИБКА]${NC} Для runtime guards нужен python3" >&2; return 1; }
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y && apt-get install -y python3
 }
@@ -77,11 +77,8 @@ run_runtime_guard(){
 }
 
 prepare_selfsteal_manager(){
-  local f="$WORK_DIR/selfsteal-site-manager.sh" g
-  ensure_python3_for_patch >&2 || return 1
+  local f="$WORK_DIR/selfsteal-site-manager.sh"
   fetch_module production/selfsteal-site-manager.sh "$f" || return 1
-  g="$(runtime_guard_file)" || return 1
-  APP_DIR="$APP_DIR" bash "$g" patch-selfsteal "$f" >&2 || return 1
   printf '%s' "$f"
 }
 
@@ -139,8 +136,8 @@ prepare_legacy_for_next(){
   f="$1"
   tmp="${f}.next"
   rm -f "$tmp"
-  if ! awk -v tref="$LEGACY_TEMPLATES_REF" '
-    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0 }
+  if ! awk -v tref="$LEGACY_TEMPLATES_REF" -v lcommit="$LEGACY_COMMIT" '
+    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0; reg_done=0; pin_telemt=0 }
     /# Выбор протокола шифрования/ {
       print "    # NEXT: July base always installs Reality/SelfSteal; modern transports are generated later."
       print "    log \"${INFO} NEXT: базовая схема Reality/SelfSteal; XHTTP/RAW/Hysteria2 настраиваются отдельно.\""
@@ -157,20 +154,30 @@ prepare_legacy_for_next(){
     /local repo_root="\$temp_unzip\/node-templates-main"/ {
       sub(/node-templates-main/, "node-templates-" tref); pin_root=1; print; next
     }
+    /base_url="https:\/\/raw\.githubusercontent\.com\/evgmahov-blip\/setup-remna-node\/custom\/vendor\/telemt-install"/ {
+      sub(/\/custom\//, "/" lcommit "/"); pin_telemt=1; print; next
+    }
+    /^    register_globally$/ {
+      print "    : # NEXT: bypass-команда remnanode не регистрируется; post-processing живёт в NEXT"
+      reg_done=1; next
+    }
     { print }
-    END { if (!proto_done || !decoy_done || !pin_url || !pin_root) exit 42 }
+    END { if (!proto_done || !decoy_done || !pin_url || !pin_root || !reg_done || !pin_telemt) exit 42 }
   ' "$f" > "$tmp"; then
     rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Не удалось безопасно адаптировать July base"; return 1
   fi
   if grep -Fq 'read -p "Ваш выбор [1]: " proto_choice' "$tmp" \
      || grep -Fq 'read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain' "$tmp" \
-     || grep -Fq 'node-templates/archive/refs/heads/main.zip' "$tmp"; then
-    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/prompt маркеры"; return 1
+     || grep -Fq 'node-templates/archive/refs/heads/main.zip' "$tmp" \
+     || grep -Fq 'setup-remna-node/custom/vendor/telemt-install' "$tmp" \
+     || grep -q '^    register_globally$' "$tmp"; then
+    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/bypass/prompt маркеры"; return 1
   fi
   grep -Fq "node-templates-${LEGACY_TEMPLATES_REF}" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy template repo root не закреплён"; return 1; }
+  grep -Fq "setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt legacy source не закреплён"; return 1; }
   bash -n "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Адаптированный July base не прошёл bash -n"; return 1; }
   chmod 0755 "$tmp"; mv -f "$tmp" "$f"
-  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned node-templates@$LEGACY_TEMPLATES_REF"
+  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates/Telemt; bypass remnanode отключён"
 }
 
 compose_fingerprint(){
@@ -179,12 +186,35 @@ compose_fingerprint(){
   sha256sum "$compose" | cut -d' ' -f1
 }
 
+remove_legacy_global_command(){
+  if [[ -e /usr/local/bin/remnanode || -L /usr/local/bin/remnanode ]]; then
+    rm -f /usr/local/bin/remnanode
+    echo -e "${YELLOW}[NEXT]${NC} Удалена legacy-команда /usr/local/bin/remnanode: она обходила NEXT post-processing."
+  fi
+}
+
 cleanup_rkn_watch_after_uninstall(){
-  systemctl disable --now remnanode-rkn-scanner-health.timer remnanode-rkn-scanner-ufw.path >/dev/null 2>&1 || true
+  systemctl disable --now \
+    remnanode-rkn-scanner-health.timer \
+    remnanode-rkn-scanner-ufw.path \
+    remnanode-rkn-scanner-update.timer \
+    remnanode-rkn-scanner-boot.service >/dev/null 2>&1 || true
+  systemctl stop remnanode-rkn-scanner-health.service remnanode-rkn-scanner-update.service remnanode-rkn-scanner-rollback.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/remnanode-rkn-scanner-health.service \
         /etc/systemd/system/remnanode-rkn-scanner-health.timer \
-        /etc/systemd/system/remnanode-rkn-scanner-ufw.path
+        /etc/systemd/system/remnanode-rkn-scanner-ufw.path \
+        /etc/systemd/system/remnanode-rkn-scanner-boot.service \
+        /etc/systemd/system/remnanode-rkn-scanner-update.service \
+        /etc/systemd/system/remnanode-rkn-scanner-update.timer
+  if command -v iptables >/dev/null 2>&1; then
+    while iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1; do
+      iptables -D INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || break
+    done
+    iptables -F REMNA_RKN_SCANNERS >/dev/null 2>&1 || true
+    iptables -X REMNA_RKN_SCANNERS >/dev/null 2>&1 || true
+  fi
   systemctl daemon-reload >/dev/null 2>&1 || true
+  remove_legacy_global_command
 }
 
 run_legacy(){
@@ -192,8 +222,16 @@ run_legacy(){
   echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
   fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
   prepare_legacy_for_next "$f" || return 1
+  remove_legacy_global_command
   before="$(compose_fingerprint)"
-  if bash "$f"; then :; else rc=$?; return "$rc"; fi
+  if bash "$f"; then
+    :
+  else
+    rc=$?
+    remove_legacy_global_command
+    return "$rc"
+  fi
+  remove_legacy_global_command
   after="$(compose_fingerprint)"
 
   if [[ "$after" == MISSING ]]; then
@@ -223,9 +261,12 @@ run_transport(){
   local f="$WORK_DIR/remnawave-transport-manager.sh" xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh" sig_ok='' minver=''
   fetch_module production/remnawave-transport-manager.sh "$f" || return 1
   echo
-  echo -e "${YELLOW}[REALITY]${NC} Xray по умолчанию может требовать client >= 26.3.27."
-  echo -e "${GRAY}Пустое значение оставляет дефолт Xray. Указывай другое только если осознанно нужна совместимость со старыми клиентами.${NC}"
+  echo -e "${YELLOW}[REALITY]${NC} Пустой minClientVer оставляет дефолт Xray >= 26.3.27; более старые клиенты могут быть отклонены."
   read -r -p 'minClientVer (пусто = дефолт Xray): ' minver || true
+  if [[ -n "$minver" && ! "$minver" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
+    echo -e "${RED}[ОШИБКА]${NC} minClientVer: допустим формат N, N.N или N.N.N"
+    return 1
+  fi
   APP_DIR="$APP_DIR" XHTTP_SIGNATURE_MODE=none REALITY_MIN_CLIENT_VER="$minver" bash "$f" || return 1
 
   if [[ "$(cat "$APP_DIR/.transport" 2>/dev/null || true)" == xhttp ]]; then
@@ -262,12 +303,63 @@ run_xhttp_signature(){
   esac
 }
 
+rkn_selftest(){
+  local guard="$APP_DIR/rkn-safe/scanner-guard.sh" failed=0
+  echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER SELFTEST ####################'
+  [[ -x "$guard" ]] || { echo '[FAIL] scanner-guard.sh отсутствует'; failed=1; }
+  if [[ -x "$guard" ]]; then "$guard" validate && echo '[OK] TSPUIPS sanity-check' || { echo '[FAIL] TSPUIPS sanity-check'; failed=1; }; fi
+  if command -v iptables >/dev/null 2>&1 && iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1; then echo '[OK] INPUT -> REMNA_RKN_SCANNERS'; else echo '[FAIL] INPUT jump отсутствует'; failed=1; fi
+  systemctl is-enabled remnanode-rkn-scanner-boot.service >/dev/null 2>&1 && echo '[OK] boot restore enabled' || { echo '[FAIL] boot restore disabled'; failed=1; }
+  systemctl is-enabled remnanode-rkn-scanner-update.timer >/dev/null 2>&1 && echo '[OK] daily update timer enabled' || { echo '[FAIL] daily update timer disabled'; failed=1; }
+  echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SELFTEST ####################'
+  return "$failed"
+}
+
 run_rkn(){
-  local f rc=0
+  local f choice rc=0 guard="$APP_DIR/rkn-safe/scanner-guard.sh"
   f="$(prepare_rkn_manager)" || return 1
-  APP_DIR="$APP_DIR" bash "$f" menu || rc=$?
-  sync_rkn_watch || true
-  return "$rc"
+  while true; do
+    clear || true
+    echo '========================================================'
+    echo ' RKN WATCHER / TSPU SCANNER GUARD'
+    echo '========================================================'
+    echo ' 1) Полная проверка состояния / SELFTEST'
+    echo ' 2) Показать весь текущий список TSPUIPS'
+    echo ' 3) Принудительно обновить scanner list SAFE updater-ом'
+    echo ' 4) Активировать / пере-применить guard с rollback 120 сек'
+    echo ' 5) Показать правила и счётчики DROP'
+    echo ' 6) Показать исключения / Allow-list'
+    echo ' 7) Статус boot restore и daily timer'
+    echo ' 8) Логи RKN Watcher / обновления / self-heal'
+    echo ' 9) Установить / обновить RKN Watcher SAFE'
+    echo '10) ADVANCED upstream menu'
+    echo '11) Полностью удалить RKN Watcher'
+    echo ' 0) Назад'
+    read -r -p 'Выбор [0]: ' choice || true
+    case "${choice:-0}" in
+      1) rkn_selftest || true; pause ;;
+      2) ipset list TSPUIPS 2>&1 || echo '[НЕТ] TSPUIPS отсутствует'; pause ;;
+      3)
+        if systemctl cat remnanode-rkn-scanner-update.service >/dev/null 2>&1; then
+          if systemctl start remnanode-rkn-scanner-update.service; then echo '[OK] SAFE update выполнен'; else echo '[FAIL] SAFE update завершился ошибкой'; fi
+          restore_rkn_guard || true; sync_rkn_watch || true
+        else
+          echo '[НЕТ] SAFE updater не установлен. Сначала пункт 9.'
+        fi
+        pause
+        ;;
+      4) APP_DIR="$APP_DIR" bash "$f" activate || true; sync_rkn_watch || true; pause ;;
+      5) iptables -L INPUT -n -v --line-numbers 2>&1 | head -20; echo; iptables -L REMNA_RKN_SCANNERS -n -v --line-numbers 2>&1 || true; pause ;;
+      6) cat /etc/rkn-watcher/remnanode-scanner-allow.txt 2>/dev/null || echo '[НЕТ] Allow-list отсутствует'; pause ;;
+      7) systemctl status remnanode-rkn-scanner-boot.service remnanode-rkn-scanner-update.timer --no-pager 2>&1 || true; systemctl list-timers --all remnanode-rkn-scanner-update.timer --no-pager 2>&1 || true; pause ;;
+      8) journalctl -u remnanode-rkn-scanner-update.service -u remnanode-rkn-scanner-boot.service -u remnanode-rkn-scanner-health.service -n 150 --no-pager 2>&1 || true; pause ;;
+      9) APP_DIR="$APP_DIR" bash "$f" install-safe || true; sync_rkn_watch || true; pause ;;
+      10) APP_DIR="$APP_DIR" bash "$f" upstream || true ;;
+      11) APP_DIR="$APP_DIR" bash "$f" uninstall || true; cleanup_rkn_watch_after_uninstall; pause ;;
+      0) return 0 ;;
+      *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; sleep 1 ;;
+    esac
+  done
 }
 
 show_sni(){
@@ -296,7 +388,8 @@ profile_paths(){
 print_profile_full(){
   local transport="$1" profile host host2='' remark mtime
   local -a first=()
-  mapfile -t first < <(profile_paths "$transport") || { echo -e "${RED}[ОШИБКА]${NC} Неизвестный transport: $transport"; return 1; }
+  case "$transport" in xhttp|raw|hysteria|combined) ;; *) echo -e "${RED}[ОШИБКА]${NC} Неизвестный transport: $transport"; return 1 ;; esac
+  mapfile -t first < <(profile_paths "$transport")
   profile="${first[0]:-}"; host="${first[1]:-}"; host2="${first[2]:-}"
   [[ -s "$profile" ]] || { echo -e "${YELLOW}[НЕТ]${NC} Профиль ещё не создан: $profile"; return 1; }
   remark="$(sed -n 's/^Remark:[[:space:]]*//p' "$host" 2>/dev/null | head -1)"
@@ -415,7 +508,7 @@ menu(){
       5) run_xhttp_signature; pause ;;
       6) show_sni ;;
       7) run_selfsteal_site; pause ;;
-      8) run_rkn; pause ;;
+      8) run_rkn ;;
       0) return 0 ;;
       *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; sleep 1 ;;
     esac
