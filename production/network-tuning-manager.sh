@@ -48,12 +48,12 @@ write_config(){
     keepalive=600
     fin=30
   else
-    somax=16384
-    backlog=8192
-    rmax=33554432
-    wmax=33554432
-    syn=8192
-    conntrack=262144
+    somax=32768
+    backlog=16384
+    rmax=67108864
+    wmax=67108864
+    syn=16384
+    conntrack=1048576
     keepalive=300
     fin=20
   fi
@@ -63,7 +63,9 @@ write_config(){
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $cc
 
-fs.file-max = 1048576
+fs.file-max = 2097152
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 1048576
 vm.swappiness = 10
 vm.max_map_count = 262144
 
@@ -160,21 +162,21 @@ apply_tuning(){
   verify_eq net.ipv4.tcp_congestion_control "$cc" || rc=1
   verify_eq net.ipv4.conf.all.rp_filter 2 || rc=1
   verify_eq net.ipv4.conf.default.rp_filter 2 || rc=1
-  verify_eq fs.file-max 1048576 || rc=1
+  verify_eq fs.file-max 2097152 || rc=1
 
   if [[ "$profile" == "SAFE" ]]; then
     verify_eq net.core.rmem_max 16777216 || rc=1
     verify_eq net.core.wmem_max 16777216 || rc=1
   else
-    verify_eq net.core.rmem_max 33554432 || rc=1
-    verify_eq net.core.wmem_max 33554432 || rc=1
+    verify_eq net.core.rmem_max 67108864 || rc=1
+    verify_eq net.core.wmem_max 67108864 || rc=1
   fi
 
   if sysctl -n net.netfilter.nf_conntrack_max >/dev/null 2>&1; then
     if [[ "$profile" == "SAFE" ]]; then
       verify_eq net.netfilter.nf_conntrack_max 65536 || rc=1
     else
-      verify_eq net.netfilter.nf_conntrack_max 262144 || rc=1
+      verify_eq net.netfilter.nf_conntrack_max 1048576 || rc=1
     fi
   else
     warn "nf_conntrack_max пока недоступен; после загрузки nf_conntrack значение применится из $CONF"
