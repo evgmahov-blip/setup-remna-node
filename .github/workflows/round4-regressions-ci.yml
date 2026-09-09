@@ -140,7 +140,7 @@ jobs:
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/app/rkn-safe" "$T/bin"
-          touch "$T/app/rkn-safe/.scanner-guard-active"
+          printf 'active\n' > "$T/app/rkn-safe/.scanner-guard-active"
           cat > "$T/app/rkn-safe/scanner-guard.sh" <<'SH'
           #!/usr/bin/env bash
           echo "$*" >> "${GUARD_LOG:?}"
