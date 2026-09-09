@@ -23,7 +23,10 @@ jobs:
           sha256sum -c production/modules.sha256
           grep -Eq '^MODULE_REF="\$\{REMNANODE_REPO_REF:-[0-9a-f]{40}\}"$' setup_node_next.sh
           grep -q '\[production/selfsteal-site-manager.sh\]' setup_node_next.sh
-          grep -q 'SelfSteal сайт — STREAM / RADIO' setup_node_next.sh
+          grep -q 'Маскировочный сайт — STREAM / RADIO / старые шаблоны / RANDOM' setup_node_next.sh
+          grep -q '^TEMPLATES_REF="[0-9a-f]\{40\}"$' production/selfsteal-site-manager.sh
+          grep -q 'endless-verify' production/selfsteal-site-manager.sh
+          grep -q 'worldzoo-stream-template' production/selfsteal-site-manager.sh
 
       - name: Default is STREAM
         run: |
@@ -55,6 +58,21 @@ jobs:
           ADMIN2="$(sudo cat "$T/.selfsteal_radio_admin")"
           test "$ADMIN1" = "$ADMIN2"
           sudo test -s "$T/www/$ADMIN2"
+
+      - name: Legacy template deploy and persistence
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/www"
+          printf 'node.example.com\n' > "$T/.node_domain"
+
+          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh template endless-verify
+          test "$(sudo cat "$T/.selfsteal_site")" = 'template:endless-verify'
+          sudo test -s "$T/www/index.html"
+
+          sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
+          test "$(sudo cat "$T/.selfsteal_site")" = 'template:endless-verify'
+          sudo test -s "$T/www/index.html"
 
       - name: Pinned manager fetched by wrapper matches checksum
         run: |
