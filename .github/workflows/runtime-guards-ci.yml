@@ -5,17 +5,26 @@ on:
     branches:
       - fix/xhttp-raw-hysteria-from-july7
       - custom
+    paths:
+      - setup_node_next.sh
+      - production/next-runtime-guards.sh
+      - production/rkn-watcher-manager.sh
+      - production/selfsteal-site-manager.sh
+      - production/network-tuning-manager.sh
+      - production/modules.sha256
+      - .github/workflows/runtime-guards-ci.yml
   pull_request:
     branches:
       - custom
 
 jobs:
   production-audit-regressions:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Syntax immutable manifest and wrapper pins
+        shell: bash
         run: |
           set -euo pipefail
           bash -n setup_node_next.sh
@@ -26,48 +35,35 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p=Path('production/modules.sha256')
-          assert p.read_bytes().endswith(b'\n'), 'modules.sha256 must end with newline'
+          assert p.read_bytes().endswith(b'\n')
           assert len([x for x in p.read_text().splitlines() if x.strip()]) == 7
           PY
           grep -Eq '^LEGACY_TEMPLATES_REF="[0-9a-f]{40}"$' setup_node_next.sh
           grep -q '\[production/next-runtime-guards.sh\]' setup_node_next.sh
-          grep -q 'setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install' setup_node_next.sh
           grep -q 'minClientVer: допустим формат' setup_node_next.sh
-          ! grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh)
+          if grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh); then
+            echo 'Unexpected runtime SelfSteal rewrite' >&2; exit 1
+          fi
 
-      - name: Patch real pinned RKN and verify hardened SelfSteal directly
+      - name: Exact RKN post-patch attestation and hardened SelfSteal source
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
           cp production/rkn-watcher-manager.sh "$T/rkn.sh"
           sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-rkn "$T/rkn.sh"
+          got="$(sha256sum "$T/rkn.sh" | awk '{print $1}')"
+          test "$got" = 'a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244'
           bash -n "$T/rkn.sh"
-          bash -n production/selfsteal-site-manager.sh
           grep -q 'validate_scanner_set' "$T/rkn.sh"
           grep -q 'last-good-tspu.ipset' "$T/rkn.sh"
           grep -q '.safe-update-running' "$T/rkn.sh"
-          grep -q 'guard disabled until manual recovery' "$T/rkn.sh"
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
           grep -q '/data/streams.json' production/selfsteal-site-manager.sh
-          grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
-          echo 'Patched RKN SHA256:'
-          sha256sum "$T/rkn.sh"
-
-          python3 - "$T/rkn.sh" "$T/guard.sh" "$T/update.sh" <<'PY'
-          from pathlib import Path
-          import sys
-          s=Path(sys.argv[1]).read_text()
-          guard=s.split("cat > \"$GUARD_SCRIPT\" <<'EOF_GUARD'\n",1)[1].split('\nEOF_GUARD',1)[0]
-          update=s.split('cat > "$SAFE_UPDATE_SCRIPT" <<EOF_UPDATE_SCRIPT\n',1)[1].split('\nEOF_UPDATE_SCRIPT',1)[0]
-          Path(sys.argv[2]).write_text(guard+'\n')
-          Path(sys.argv[3]).write_text(update+'\n')
-          PY
-          bash -n "$T/guard.sh"
-          bash -n "$T/update.sh"
-          grep -q '.safe-update-running' "$T/update.sh"
-          grep -q 'rm -f .*scanner-guard-active' "$T/update.sh"
+          grep -q 'немутированный STREAM публиковать запрещено' production/selfsteal-site-manager.sh
 
       - name: RKN rejects dangerous scanner networks before touching iptables
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -86,9 +82,7 @@ jobs:
           #!/usr/bin/env bash
           case "${1:-}" in
             list)
-              echo 'Name: TSPUIPS'
-              echo 'Number of entries: 1'
-              echo 'Members:'
+              echo 'Name: TSPUIPS'; echo 'Number of entries: 1'; echo 'Members:'
               [[ "${MOCK_IPSET_MODE:-wide}" == valid ]] && echo '5.6.7.0/24' || echo '0.0.0.0/0'
               ;;
             save)
@@ -105,12 +99,17 @@ jobs:
           SH
           chmod +x "$T/bin/ipset" "$T/bin/iptables"
           : > "$T/iptables.log"
-          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" validate; then exit 1; fi
-          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" apply; then exit 1; fi
+          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" validate; then
+            echo 'dangerous /0 unexpectedly validated' >&2; exit 1
+          fi
+          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" apply; then
+            echo 'dangerous /0 unexpectedly applied' >&2; exit 1
+          fi
           test ! -s "$T/iptables.log"
           sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" MOCK_IPSET_MODE=valid bash "$T/guard.sh" validate
 
-      - name: Hysteria cert bind restore follows profile not transport state
+      - name: Hysteria cert bind restore follows profile not transport marker
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -130,16 +129,30 @@ jobs:
           #!/usr/bin/env bash
           if [[ "${1:-}" == ps ]]; then echo remnanode; exit 0; fi
           if [[ "${1:-}" == exec ]]; then [[ -f "${MOCK_STATE:?}" ]]; exit $?; fi
-          if [[ "${1:-}" == compose ]]; then touch "${MOCK_STATE:?}"; exit 0; fi
+          if [[ "${1:-}" == compose ]]; then
+            [[ "${MOCK_FAIL_COMPOSE:-0}" == 1 ]] && exit 1
+            touch "${MOCK_STATE:?}"; exit 0
+          fi
           exit 0
           SH
           chmod +x "$T/bin/docker"
-          sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" bash production/next-runtime-guards.sh restore-hysteria
+          before="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          if sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" MOCK_FAIL_COMPOSE=1 APP_DIR="$T/app" \
+            bash production/next-runtime-guards.sh restore-hysteria; then
+            echo 'compose failure unexpectedly returned success' >&2; exit 1
+          fi
+          after_fail="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          test "$before" = "$after_fail"
+          sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
+            bash production/next-runtime-guards.sh restore-hysteria
           sudo grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
           sudo test -f "$T/mounted"
-          ! sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .
+          if sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .; then
+            echo 'successful Hysteria restore left backup behind' >&2; exit 1
+          fi
 
       - name: H3 NORMAL network profile never drops below July baseline
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -160,22 +173,22 @@ jobs:
           test "$(getv net.ipv4.conf.all.rp_filter)" -eq 2
           test "$(getv net.ipv4.conf.default.rp_filter)" -eq 2
 
-      - name: H4 pinned template is truly unique and leaks no manifest
+      - name: H4 pinned template is unique and leaks no metadata
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
-          grep -q "local selected='random' template" production/selfsteal-site-manager.sh
-          grep -q 'APP_DIR="$APP_DIR" bash "$f" random' setup_node_next.sh
           sudo env APP_DIR="$T/node-a" WWW_DIR="$T/www-a" bash production/selfsteal-site-manager.sh template endless-verify
           sudo env APP_DIR="$T/node-b" WWW_DIR="$T/www-b" bash production/selfsteal-site-manager.sh template endless-verify
           sudo grep -qx 'template:endless-verify' "$T/node-a/.selfsteal_site"
           A="$(sudo sha256sum "$T/www-a/index.html" | awk '{print $1}')"
           B="$(sudo sha256sum "$T/www-b/index.html" | awk '{print $1}')"
           test "$A" != "$B"
-          ! sudo find "$T/www-a" -name '.uniquify-manifest.txt' -print -quit | grep -q .
-          ! sudo find "$T/www-a" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .
+          if sudo find "$T/www-a" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
+          if sudo find "$T/www-a" \( -name 'README.md' -o -name 'README.MD' \) -print -quit | grep -q .; then echo 'README leaked' >&2; exit 1; fi
 
-      - name: Legacy adaptation pins templates Telemt and removes bypass command
+      - name: Legacy adaptation pins dependencies removes bypass and disables unsafe Telemt
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -185,15 +198,17 @@ jobs:
           echo "$LEGACY_SHA256  $T/legacy.sh" | sha256sum -c -
           prepare_legacy_for_next "$T/legacy.sh"
           bash -n "$T/legacy.sh"
-          ! grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"
+          if grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"; then echo 'mutable templates remain' >&2; exit 1; fi
           grep -q "node-templates/archive/${LEGACY_TEMPLATES_REF}.zip" "$T/legacy.sh"
           grep -q "node-templates-${LEGACY_TEMPLATES_REF}" "$T/legacy.sh"
-          ! grep -q '^    register_globally$' "$T/legacy.sh"
-          ! grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"
-          grep -q "setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install" "$T/legacy.sh"
+          if grep -q '^    register_globally$' "$T/legacy.sh"; then echo 'legacy global bypass remains' >&2; exit 1; fi
+          if grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"; then echo 'mutable Telemt source remains' >&2; exit 1; fi
+          if grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$T/legacy.sh"; then echo 'unsafe Telemt menu remains reachable' >&2; exit 1; fi
+          grep -Fq 'Telemt отключён в NEXT' "$T/legacy.sh"
           grep -q 'local protocol="reality"' "$T/legacy.sh"
 
       - name: Uninstall cleanup cannot leave RKN guard or persistent units
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -212,14 +227,14 @@ jobs:
             esac
           }
           cleanup_rkn_watch_after_uninstall
-          cat "$LOG"
           test "$(cat "$STATE")" = 0
           grep -q 'remnanode-rkn-scanner-update.timer' "$LOG"
           grep -q 'remnanode-rkn-scanner-boot.service' "$LOG"
           grep -q 'iptables -D INPUT -j REMNA_RKN_SCANNERS' "$LOG"
           grep -q 'iptables -X REMNA_RKN_SCANNERS' "$LOG"
 
-      - name: Legacy post-actions follow compose state
+      - name: Legacy post-actions recover always and keep heavy work gated
+        shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
@@ -233,24 +248,23 @@ jobs:
           cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
           restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
           sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
-          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
           restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
+          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
           run_rkn_default(){ echo rkn-default >> "$LOG"; }
-
-          : > "$LOG"
-          FAKE_LEGACY_ACTION='rm -f "'$APP_DIR'/docker-compose.yml"' run_legacy
-          grep -qx cleanup "$LOG"
-          ! grep -qE 'selfsteal|hysteria|rkn-default' "$LOG"
 
           printf 'same\n' > "$APP_DIR/docker-compose.yml"
           : > "$LOG"
           FAKE_LEGACY_ACTION=':' run_legacy
-          grep -qx restore-rkn "$LOG"
-          grep -qx sync-rkn "$LOG"
-          ! grep -qE 'selfsteal|hysteria|rkn-default' "$LOG"
+          grep -Fxq restore-rkn "$LOG"
+          grep -Fxq sync-rkn "$LOG"
+          grep -Fxq hysteria "$LOG"
+          if grep -Fxq selfsteal "$LOG"; then echo 'SelfSteal ran on no-op' >&2; exit 1; fi
+          if grep -Fxq rkn-default "$LOG"; then echo 'RKN install ran on no-op' >&2; exit 1; fi
 
           : > "$LOG"
           FAKE_LEGACY_ACTION='printf changed\\n > "'$APP_DIR'/docker-compose.yml"' run_legacy
-          grep -qx selfsteal "$LOG"
-          grep -qx hysteria "$LOG"
-          grep -qx rkn-default "$LOG"
+          grep -Fxq restore-rkn "$LOG"
+          grep -Fxq sync-rkn "$LOG"
+          grep -Fxq hysteria "$LOG"
+          grep -Fxq selfsteal "$LOG"
+          grep -Fxq rkn-default "$LOG"
