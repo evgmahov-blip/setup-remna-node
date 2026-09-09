@@ -83,12 +83,21 @@ jobs:
             and ([.mounts[].listener_count] | all(. == 0))
           ' "$T/www/data/streams.json"
 
-          sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T/www/index.html"
-          sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T/www/index.html"
-          sudo grep -Fq 'const STREAM_ORIGIN = window.location.origin;' "$T/www/index.html"
-          sudo grep -Fq 'information.stream_url' "$T/www/index.html"
-          sudo grep -Fq 'state.sort === "listeners"' "$T/www/index.html"
-          sudo grep -Eq '\$\{[[:space:]]*active[[:space:]]*\?' "$T/www/index.html"
+          sudo python3 - "$T/www/index.html" <<'PY'
+          from pathlib import Path
+          import re, sys
+          s=Path(sys.argv[1]).read_text(encoding='utf-8')
+          for item in [
+              'const HEALTH_API = "/data/streams.json";',
+              'const HISTORY_API = "/data/history.json";',
+              'const STREAM_ORIGIN = window.location.origin;',
+              'information.stream_url',
+              'state.sort === "listeners"',
+          ]:
+              assert item in s, item
+          assert re.search(r'\$\{\s*active\s*\?', s, re.S)
+          assert not re.search(r'\$\{\s*u[0-9a-f]{6,16}\s*\?', s, re.S)
+          PY
 
           if sudo grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T/www/index.html" "$T/www/data/streams.json"; then
             echo 'Browser-visible files leaked an external origin' >&2
@@ -122,18 +131,31 @@ jobs:
           mkdir -p "$T/app" "$T/www" "$T/fixtures" "$T/cache"
           cp selfsteal/stream/index.html "$T/www/index.html"
           printf 'usa2.remna.2rdp.ru\n' > "$T/app/.node_domain"
-          sed -i -E 's/\$\{[[:space:]]*active[[:space:]]*\?/\${ u1234abcd ?/' "$T/www/index.html"
-          sed -i 's/state.sort === "listeners"/state.sort === "u87654321"/' "$T/www/index.html"
+
+          python3 - "$T/www/index.html" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          s,n=re.subn(r'(class="[^"]*\$\{\s*)active(\s*\?\s*"\s+active"\s*:\s*""\s*\})', r'\1u1234abcd\2', s, count=1, flags=re.S)
+          assert n == 1
+          s=s.replace('state.sort === "listeners"','state.sort === "u87654321"',1)
+          p.write_text(s,encoding='utf-8')
+          PY
+
           for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do
             printf 'fake-audio-%s\n' "$f" > "$T/fixtures/$f"
           done
+
           sudo env APP_DIR="$T/app" WWW_DIR="$T/www" CACHE_DIR="$T/cache" \
             STREAM_AUDIO_FIXTURE_DIR="$T/fixtures" STREAM_SKIP_NGINX_PROXY=1 \
             STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
             bash production/stream-safe-audio-manager.sh install
-          sudo grep -Eq '\$\{[[:space:]]*active[[:space:]]*\?' "$T/www/index.html"
-          sudo grep -Fq 'state.sort === "listeners"' "$T/www/index.html"
-          if sudo grep -Eq '\$\{[[:space:]]*u[0-9a-f]{6,16}[[:space:]]*\?' "$T/www/index.html"; then
-            echo 'Mutated JS runtime token survived repair' >&2
-            exit 1
-          fi
+
+          sudo python3 - "$T/www/index.html" <<'PY'
+          from pathlib import Path
+          import re, sys
+          s=Path(sys.argv[1]).read_text(encoding='utf-8')
+          assert re.search(r'\$\{\s*active\s*\?', s, re.S)
+          assert 'state.sort === "listeners"' in s
+          assert not re.search(r'\$\{\s*u[0-9a-f]{6,16}\s*\?', s, re.S)
+          PY
