@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-270fdcf0f23d882909006953984d1231f8f1cc65}"
+MODULE_REF="${REMNANODE_REPO_REF:-4e34ab5f9636c2610cb34165984ba3e31820796f}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 REPO="evgmahov-blip/setup-remna-node"
@@ -18,7 +18,7 @@ declare -A MODULE_SHA256=(
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
   [production/selfsteal-site-manager.sh]="f2006f86dcc3bd2c60e45e540d935fdc57a8a0dca44320bac573b1445ccde2af"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
-  [production/network-tuning-manager.sh]="25ebe8434d96b5b55f248ec709e275913d9a227518b978b8bd0be7f3e0784af9"
+  [production/network-tuning-manager.sh]="25ebe8434d96b5b55d248ec709e275913d9a227518b978b8bd0be7f3e0784af9"
   [production/next-runtime-guards.sh]="6832fec731e4bf3b76c5c49e97ee857b1f7aafdf870f0090ab9be58103845dc4"
 )
 
