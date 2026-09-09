@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/xhttp-raw-hysteria-from-july7
+      - custom
   pull_request:
     paths:
       - 'setup_node_next.sh'
