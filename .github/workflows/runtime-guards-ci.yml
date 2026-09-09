@@ -191,22 +191,25 @@ jobs:
           touch "$T/ready"
           sleep 4
           SH
-          chmod +x "$T/holder.sh"
-          bash "$T/holder.sh" &
+          cat > "$T/contender.sh" <<SH
+          #!/usr/bin/env bash
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/app/next-installer"
+          remove_legacy_global_command(){ :; }
+          register_next_global_command(){ :; }
+          if preflight; then
+            echo 'second NEXT preflight unexpectedly acquired lock' >&2
+            exit 42
+          fi
+          SH
+          chmod +x "$T/holder.sh" "$T/contender.sh"
+          sudo bash "$T/holder.sh" &
           holder=$!
           for _ in $(seq 1 40); do [[ -e "$T/ready" ]] && break; sleep 0.1; done
           test -e "$T/ready"
-          (
-            source "$T/setup-lib.sh"
-            APP_DIR="$T/app"; WORK_DIR="$T/app/next-installer"
-            remove_legacy_global_command(){ :; }
-            register_next_global_command(){ :; }
-            if preflight; then
-              echo 'second NEXT preflight unexpectedly acquired lock' >&2; exit 1
-            fi
-          )
+          sudo bash "$T/contender.sh"
           wait "$holder"
-          test -e "$T/app/.remnanode-next.lock"
+          sudo test -e "$T/app/.remnanode-next.lock"
 
       - name: H3 NORMAL network profile never drops below July baseline
         shell: bash
