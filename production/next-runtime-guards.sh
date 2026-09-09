@@ -8,6 +8,7 @@ RKN_HEALTH_SERVICE="remnanode-rkn-scanner-health.service"
 RKN_HEALTH_TIMER="remnanode-rkn-scanner-health.timer"
 RKN_UFW_PATH="remnanode-rkn-scanner-ufw.path"
 RKN_PATCHED_MANAGER_SHA256="a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244"
+RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
@@ -21,7 +22,7 @@ patch_rkn_manager(){
   python3 - "$target" <<'PY'
 from pathlib import Path
 import re, sys
-p=Path(sys.argv[1]); s=p.read_text()
+p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
 
 needle='''IPSET_STATE_FILE="/var/lib/rkn-watcher/state/ipset.conf"\n'''
 insert='''IPSET_STATE_FILE="/var/lib/rkn-watcher/state/ipset.conf"\nLAST_COUNT_FILE="/var/lib/rkn-watcher/state/remna-scanner-last-count"\nMIN_PREFIX="${SCANNER_MIN_PREFIX:-16}"\nMAX_ENTRIES="${SCANNER_MAX_ENTRIES:-300000}"\n'''
@@ -66,7 +67,7 @@ if needle not in s:
     raise SystemExit('RKN patch marker ExecStopPost not found')
 s=s.replace(needle, insert, 1)
 
-p.write_text(s)
+p.write_text(s, encoding='utf-8')
 PY
   bash -n "$target" || { fail 'patched RKN manager не прошёл bash -n'; return 1; }
   grep -Fq 'validate_scanner_set' "$target" || { fail 'RKN sanity patch не применён'; return 1; }
@@ -132,10 +133,25 @@ restore_hysteria_cert_mount(){
   log '[OK] Hysteria2 cert bind восстановлен'
 }
 
+rkn_update_lock_active(){
+  local lock="$APP_DIR/rkn-safe/.safe-update-running" stale=''
+  [[ -e "$lock" ]] || return 1
+  stale="$(find "$lock" -mmin "+${RKN_UPDATE_LOCK_MAX_MINUTES}" -print -quit 2>/dev/null || true)"
+  if [[ -n "$stale" ]]; then
+    log "[RKN] Обнаружен протухший update lock (> ${RKN_UPDATE_LOCK_MAX_MINUTES} мин); удаляю"
+    rm -f "$lock"
+    return 1
+  fi
+  return 0
+}
+
 restore_rkn_guard(){
   local guard="$APP_DIR/rkn-safe/scanner-guard.sh"
   [[ -s "$APP_DIR/rkn-safe/.scanner-guard-active" && -x "$guard" ]] || return 0
-  [[ ! -e "$APP_DIR/rkn-safe/.safe-update-running" ]] || return 0
+  if rkn_update_lock_active; then
+    log '[RKN] SAFE update сейчас активен; self-heal временно отложен'
+    return 0
+  fi
   command -v iptables >/dev/null 2>&1 || return 0
   if iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1; then return 0; fi
   log '[RKN] Guard отсутствует (возможен ufw reload); восстанавливаю'
@@ -164,7 +180,7 @@ ConditionPathExists=$APP_DIR/rkn-safe/.scanner-guard-active
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 2
-ExecStart=/bin/sh -c 'test -e $APP_DIR/rkn-safe/.safe-update-running && exit 0; iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || $guard apply'
+ExecStart=/bin/sh -c 'lock=$APP_DIR/rkn-safe/.safe-update-running; if test -e "\$lock"; then if test -n "\$(find "\$lock" -mmin +$RKN_UPDATE_LOCK_MAX_MINUTES -print -quit 2>/dev/null)"; then logger -t remna-rkn "Removing stale SAFE update lock"; rm -f "\$lock"; else exit 0; fi; fi; iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || $guard apply'
 EOF_SERVICE
   cat > "/etc/systemd/system/$RKN_HEALTH_TIMER" <<EOF_TIMER
 [Unit]
