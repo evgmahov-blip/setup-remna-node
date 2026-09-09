@@ -125,8 +125,8 @@ jobs:
           SH
           chmod +x "$T/bin/docker"
           sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" bash production/next-runtime-guards.sh restore-hysteria
-          grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
-          test -f "$T/mounted"
+          sudo grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
+          sudo test -f "$T/mounted"
 
       - name: Legacy adaptation pins third-party template code
         run: |
