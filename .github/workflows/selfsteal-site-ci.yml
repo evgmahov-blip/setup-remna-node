@@ -30,7 +30,7 @@ jobs:
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
           grep -q '/data/streams.json' production/selfsteal-site-manager.sh
           grep -q 'ANNA_KARENINA_URL=' production/selfsteal-site-manager.sh
-          grep -q "--exclude 'active,listeners'" production/selfsteal-site-manager.sh
+          grep -q -- "--exclude 'active,listeners'" production/selfsteal-site-manager.sh
           grep -q 'const STREAM_ORIGIN = window.location.origin;' production/selfsteal-site-manager.sh
           grep -q 'stream_has_legacy_external_dependency' production/selfsteal-site-manager.sh
           grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
