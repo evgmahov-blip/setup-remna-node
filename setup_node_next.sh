@@ -135,7 +135,9 @@ run_rkn_default(){
 }
 
 prepare_legacy_for_next(){
-  local f="$1" tmp="${f}.next"
+  local f tmp
+  f="$1"
+  tmp="${f}.next"
   rm -f "$tmp"
   if ! awk -v tref="$LEGACY_TEMPLATES_REF" '
     BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0 }
