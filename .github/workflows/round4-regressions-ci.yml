@@ -1,0 +1,198 @@
+name: round4-regressions-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+      - custom
+    paths:
+      - setup_node_next.sh
+      - production/next-runtime-guards.sh
+      - production/selfsteal-site-manager.sh
+      - production/rkn-watcher-manager.sh
+      - production/modules.sha256
+      - .github/workflows/round4-regressions-ci.yml
+  pull_request:
+    branches:
+      - custom
+
+jobs:
+  round4-production-regressions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and immutable pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n setup_node_next.sh
+          bash -n production/next-runtime-guards.sh
+          bash -n production/selfsteal-site-manager.sh
+          sha256sum -c production/modules.sha256
+          module_ref="$(sed -n 's/^MODULE_REF="${REMNANODE_REPO_REF:-\([0-9a-f]\{40\}\)}"$/\1/p' setup_node_next.sh)"
+          test "${#module_ref}" -eq 40
+          test "$module_ref" = '52a25219dd2e9efd985d0daa439ae9c98da1e1c0'
+
+      - name: RKN patched manager has exact attested SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          cp production/rkn-watcher-manager.sh "$T/rkn.sh"
+          sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-rkn "$T/rkn.sh"
+          got="$(sha256sum "$T/rkn.sh" | awk '{print $1}')"
+          test "$got" = 'a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244'
+
+      - name: Adapted July disables unsafe Telemt and marks uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          source "$T/setup-lib.sh"
+          curl -fsSL --proto '=https' \
+            "https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${LEGACY_COMMIT}/setup_node.sh" \
+            -o "$T/legacy.sh"
+          echo "$LEGACY_SHA256  $T/legacy.sh" | sha256sum -c -
+          prepare_legacy_for_next "$T/legacy.sh"
+          bash -n "$T/legacy.sh"
+          ! grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$T/legacy.sh"
+          grep -Fq 'Telemt отключён в NEXT' "$T/legacy.sh"
+          grep -Fq 'NEXT_ACTION_FILE' "$T/legacy.sh"
+          ! grep -q '^    register_globally$' "$T/legacy.sh"
+          ! grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"
+          ! grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"
+
+      - name: BL-1 recovery runs after legacy failure and same compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/work"; mkdir -p "$APP_DIR" "$WORK_DIR"
+          LOG="$T/log"
+          fetch_url(){ printf '#!/usr/bin/env bash\n%s\n' "${FAKE_LEGACY_ACTION:-:}" > "$2"; chmod +x "$2"; }
+          prepare_legacy_for_next(){ :; }
+          remove_legacy_global_command(){ echo remove-global >> "$LOG"; }
+          cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
+          restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
+          sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
+          restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
+          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
+          run_rkn_default(){ echo rkn-default >> "$LOG"; }
+
+          printf 'old\n' > "$APP_DIR/docker-compose.yml"
+          : > "$LOG"
+          if FAKE_LEGACY_ACTION='printf changed\\n > "'$APP_DIR'/docker-compose.yml"; exit 1' run_legacy; then
+            echo 'legacy failure unexpectedly returned success' >&2; exit 1
+          fi
+          grep -Fxq restore-rkn "$LOG"
+          grep -Fxq sync-rkn "$LOG"
+          grep -Fxq hysteria "$LOG"
+          ! grep -Fxq selfsteal "$LOG"
+          ! grep -Fxq rkn-default "$LOG"
+
+          printf 'same\n' > "$APP_DIR/docker-compose.yml"
+          : > "$LOG"
+          FAKE_LEGACY_ACTION=':' run_legacy
+          grep -Fxq restore-rkn "$LOG"
+          grep -Fxq sync-rkn "$LOG"
+          grep -Fxq hysteria "$LOG"
+          ! grep -Fxq selfsteal "$LOG"
+          ! grep -Fxq rkn-default "$LOG"
+
+      - name: Failed uninstall cleans RKN and never self-heals
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/work"; mkdir -p "$APP_DIR" "$WORK_DIR"
+          LOG="$T/log"
+          printf 'existing\n' > "$APP_DIR/docker-compose.yml"
+          fetch_url(){ cat > "$2" <<'SH'
+          #!/usr/bin/env bash
+          printf 'uninstall\n' > "${NEXT_ACTION_FILE:?}"
+          printf 'partial\n' > "${APP_DIR_FOR_TEST:?}/docker-compose.yml"
+          exit 1
+          SH
+          chmod +x "$2"; }
+          prepare_legacy_for_next(){ :; }
+          remove_legacy_global_command(){ :; }
+          cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
+          restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
+          sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
+          restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
+          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
+          run_rkn_default(){ echo rkn-default >> "$LOG"; }
+          export APP_DIR_FOR_TEST="$APP_DIR"
+          : > "$LOG"
+          if run_legacy; then echo 'failed uninstall unexpectedly returned success' >&2; exit 1; fi
+          grep -Fxq cleanup "$LOG"
+          ! grep -qE 'restore-rkn|sync-rkn|hysteria|selfsteal|rkn-default' "$LOG"
+
+      - name: H-1 stale RKN update lock self-heals while fresh lock waits
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/app/rkn-safe" "$T/bin"
+          touch "$T/app/rkn-safe/.scanner-guard-active"
+          cat > "$T/app/rkn-safe/scanner-guard.sh" <<'SH'
+          #!/usr/bin/env bash
+          echo "$*" >> "${GUARD_LOG:?}"
+          exit 0
+          SH
+          cat > "$T/bin/iptables" <<'SH'
+          #!/usr/bin/env bash
+          [[ "${1:-}" == '-C' ]] && exit 1
+          exit 0
+          SH
+          chmod +x "$T/app/rkn-safe/scanner-guard.sh" "$T/bin/iptables"
+          : > "$T/guard.log"
+
+          touch "$T/app/rkn-safe/.safe-update-running"
+          touch -d '40 minutes ago' "$T/app/rkn-safe/.safe-update-running"
+          sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
+            bash production/next-runtime-guards.sh restore-rkn
+          ! test -e "$T/app/rkn-safe/.safe-update-running"
+          grep -Fxq apply "$T/guard.log"
+
+          : > "$T/guard.log"
+          touch "$T/app/rkn-safe/.safe-update-running"
+          sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
+            bash production/next-runtime-guards.sh restore-rkn
+          test -e "$T/app/rkn-safe/.safe-update-running"
+          test ! -s "$T/guard.log"
+
+      - name: STREAM uniquify failure preserves existing webroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          APP_DIR="$T/app"; WWW_DIR="$T/www"; mkdir -p "$APP_DIR" "$WWW_DIR"
+          printf 'node.example.com\n' > "$APP_DIR/.node_domain"
+          printf 'KNOWN-GOOD\n' > "$WWW_DIR/index.html"
+          before="$(sha256sum "$WWW_DIR/index.html" | awk '{print $1}')"
+          sed '/^main "\$@"$/d' production/selfsteal-site-manager.sh > "$T/self-lib.sh"
+          export APP_DIR WWW_DIR
+          source "$T/self-lib.sh"
+          fetch_static(){
+            cat > "$2" <<'HTML'
+          <!doctype html><html><head><title>mstream</title></head><body>
+          <script>
+          const HEALTH_API = "/api/deepbeat-health";
+          const HISTORY_API = "/api/deepbeat-history";
+          const STREAM_ORIGIN = "https://stream.deepbeat.ru:8443";
+          </script></body></html>
+          HTML
+          }
+          uniquify_dir(){ return 1; }
+          if deploy_stream; then echo 'STREAM unexpectedly published without uniquify' >&2; exit 1; fi
+          after="$(sha256sum "$WWW_DIR/index.html" | awk '{print $1}')"
+          test "$before" = "$after"
+          grep -Fxq 'KNOWN-GOOD' "$WWW_DIR/index.html"
+          ! test -e "$APP_DIR/.selfsteal_site"
