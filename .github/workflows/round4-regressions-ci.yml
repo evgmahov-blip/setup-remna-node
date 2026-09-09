@@ -32,7 +32,7 @@ jobs:
           sha256sum -c production/modules.sha256
           module_ref="$(sed -n 's/^MODULE_REF="${REMNANODE_REPO_REF:-\([0-9a-f]\{40\}\)}"$/\1/p' setup_node_next.sh)"
           test "${#module_ref}" -eq 40
-          test "$module_ref" = '9f079a38fdc819765eec6c906ffc5a72a443c9ea'
+          test "$module_ref" = 'bc8d41270ee43ad770403c07028706e3454e13cc'
 
       - name: RKN patched manager has exact attested SHA
         shell: bash
