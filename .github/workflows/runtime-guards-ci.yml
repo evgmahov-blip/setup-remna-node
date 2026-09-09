@@ -143,12 +143,16 @@ jobs:
           fi
           after_fail="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
           test "$before" = "$after_fail"
+          failure_backup="$(sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit)"
+          test -n "$failure_backup"
+          echo "[OK] failure path retained recovery backup: $failure_backup"
+          sudo rm -f -- "$failure_backup"
           sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
             bash production/next-runtime-guards.sh restore-hysteria
           sudo grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
           sudo test -f "$T/mounted"
           if sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .; then
-            echo 'successful Hysteria restore left backup behind' >&2; exit 1
+            echo 'successful Hysteria restore left its own backup behind' >&2; exit 1
           fi
 
       - name: H3 NORMAL network profile never drops below July baseline
