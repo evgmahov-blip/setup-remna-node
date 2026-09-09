@@ -18,8 +18,8 @@ RADIOBOOK_PORT="8069"
 RADIOBOOK_PATH="/fm"
 RADIOBOOK_URL="https://${RADIOBOOK_HOST}:${RADIOBOOK_PORT}${RADIOBOOK_PATH}"
 
-ALICE_URL="https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01.mp3"
-SHERLOCK_URL="https://archive.org/download/adventures_holmes/adventureholmes_01_doyle.mp3"
+TOLSTOY_TEACHINGS_URL="https://www.archive.org/download/teachingsofchrist_1204_librivox/teachingsofchrist_1_tolstoy_64kb.mp3"
+TOLSTOY_CHILDHOOD_URL="https://www.archive.org/download/childhood_russian_librivox/Leo-Tolstoy-Detstvo-RUSSIAN-01-Karl-Ivanych_64kb.mp3"
 BEETHOVEN_URL="https://upload.wikimedia.org/wikipedia/commons/transcoded/d/d0/Moonlight_Sonata.ogg/Moonlight_Sonata.ogg.mp3?download="
 CHOPIN_URL="https://upload.wikimedia.org/wikipedia/commons/transcoded/0/04/Chopin_Nocturne_No._2_in_E_Flat_Major%2C_Op._9.ogg/Chopin_Nocturne_No._2_in_E_Flat_Major%2C_Op._9.ogg.mp3?download="
 BACH_URL="https://upload.wikimedia.org/wikipedia/commons/transcoded/1/1e/Air_%28Bach%29.ogg/Air_%28Bach%29.ogg.mp3?download="
@@ -29,18 +29,13 @@ MARK_END="# END REMNANODE STREAM RADIOBOOK"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
-
-require_root(){
-  [[ ${EUID:-$(id -u)} -eq 0 ]] || { fail 'Запусти от root'; return 1; }
-}
+require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || { fail 'Запусти от root'; return 1; }; }
 
 validate_limits(){
   [[ "$STREAM_AUDIO_MIN_BYTES" =~ ^[0-9]+$ ]] || { fail 'STREAM_AUDIO_MIN_BYTES должен быть целым числом'; return 1; }
   [[ "$STREAM_AUDIO_MAX_BYTES" =~ ^[0-9]+$ ]] || { fail 'STREAM_AUDIO_MAX_BYTES должен быть целым числом'; return 1; }
-  (( STREAM_AUDIO_MIN_BYTES >= 1 && STREAM_AUDIO_MAX_BYTES > STREAM_AUDIO_MIN_BYTES )) \
-    || { fail 'Некорректные лимиты размера audio'; return 1; }
-  [[ "$STREAM_SKIP_NGINX_PROXY" == 0 || "$STREAM_SKIP_NGINX_PROXY" == 1 ]] \
-    || { fail 'STREAM_SKIP_NGINX_PROXY допустим только 0 или 1'; return 1; }
+  (( STREAM_AUDIO_MIN_BYTES >= 1 && STREAM_AUDIO_MAX_BYTES > STREAM_AUDIO_MIN_BYTES )) || { fail 'Некорректные лимиты размера audio'; return 1; }
+  [[ "$STREAM_SKIP_NGINX_PROXY" == 0 || "$STREAM_SKIP_NGINX_PROXY" == 1 ]] || { fail 'STREAM_SKIP_NGINX_PROXY допустим только 0 или 1'; return 1; }
 }
 
 node_domain(){
@@ -73,20 +68,24 @@ fetch_audio(){
     return 0
   fi
   if valid_audio_file "$dst"; then log "[OK] audio cache: $name ($(file_size "$dst") bytes)"; return 0; fi
-  part="${dst}.part"; rm -f -- "$part"
+  part="${dst}.part"
+  rm -f -- "$part"
   log "[INFO] Загружаю локальный audio asset: $name"
   if ! curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
       --connect-timeout 15 --max-time 600 --retry 2 --retry-delay 2 \
-      "$url" -o "$part"; then rm -f -- "$part"; fail "Не удалось скачать audio asset: $name"; return 1; fi
+      "$url" -o "$part"; then
+    rm -f -- "$part"; fail "Не удалось скачать audio asset: $name"; return 1
+  fi
   if ! valid_audio_file "$part"; then rm -f -- "$part"; fail "Скачанный файл не похож на допустимый audio asset: $name"; return 1; fi
-  chmod 0644 "$part"; mv -f -- "$part" "$dst"
+  chmod 0644 "$part"
+  mv -f -- "$part" "$dst"
   log "[OK] audio asset: $name ($(file_size "$dst") bytes)"
 }
 
 prepare_audio_cache(){
   mkdir -p "$CACHE_DIR"
-  fetch_audio 'alice-wonderland-ch01.mp3' "$ALICE_URL" "$CACHE_DIR/alice-wonderland-ch01.mp3" || return 1
-  fetch_audio 'sherlock-scandal-in-bohemia.mp3' "$SHERLOCK_URL" "$CACHE_DIR/sherlock-scandal-in-bohemia.mp3" || return 1
+  fetch_audio 'tolstoy-teachings-ch01.mp3' "$TOLSTOY_TEACHINGS_URL" "$CACHE_DIR/tolstoy-teachings-ch01.mp3" || return 1
+  fetch_audio 'tolstoy-childhood-ch01.mp3' "$TOLSTOY_CHILDHOOD_URL" "$CACHE_DIR/tolstoy-childhood-ch01.mp3" || return 1
   fetch_audio 'beethoven-moonlight.mp3' "$BEETHOVEN_URL" "$CACHE_DIR/beethoven-moonlight.mp3" || return 1
   fetch_audio 'chopin-nocturne.mp3' "$CHOPIN_URL" "$CACHE_DIR/chopin-nocturne.mp3" || return 1
   fetch_audio 'bach-air.mp3' "$BACH_URL" "$CACHE_DIR/bach-air.mp3" || return 1
@@ -122,8 +121,8 @@ write_catalog(){
   jq -n --argjson generated "$(date +%s)" '
     {generated:$generated,mounts:{
       "/radio-book":{status:"Active",listener_count:0,format:{bitrate:256,content_type:"audio/mpeg"},metadata:{now_playing:"Радио Книга — прямой литературный эфир"},stream_url:"/audio/radio-book"},
-      "/alice-wonderland":{status:"Active",listener_count:0,format:{bitrate:64,content_type:"audio/mpeg"},metadata:{now_playing:"Lewis Carroll — Alice in Wonderland, Chapter 1"},stream_url:"/audio/alice-wonderland-ch01.mp3"},
-      "/sherlock-holmes":{status:"Active",listener_count:0,format:{bitrate:64,content_type:"audio/mpeg"},metadata:{now_playing:"Arthur Conan Doyle — A Scandal in Bohemia"},stream_url:"/audio/sherlock-scandal-in-bohemia.mp3"},
+      "/tolstoy-teachings":{status:"Active",listener_count:0,format:{bitrate:64,content_type:"audio/mpeg"},metadata:{now_playing:"Лев Толстой — Учение Христа, изложенное для детей · главы 1–3"},stream_url:"/audio/tolstoy-teachings-ch01.mp3"},
+      "/tolstoy-childhood":{status:"Active",listener_count:0,format:{bitrate:64,content_type:"audio/mpeg"},metadata:{now_playing:"Лев Толстой — Детство · Карл Иваныч"},stream_url:"/audio/tolstoy-childhood-ch01.mp3"},
       "/beethoven-moonlight":{status:"Active",listener_count:0,format:{bitrate:128,content_type:"audio/mpeg"},metadata:{now_playing:"Beethoven — Moonlight Sonata"},stream_url:"/audio/beethoven-moonlight.mp3"},
       "/chopin-nocturne":{status:"Active",listener_count:0,format:{bitrate:128,content_type:"audio/mpeg"},metadata:{now_playing:"Chopin — Nocturne No. 2 in E-flat Major"},stream_url:"/audio/chopin-nocturne.mp3"},
       "/bach-air":{status:"Active",listener_count:0,format:{bitrate:128,content_type:"audio/mpeg"},metadata:{now_playing:"J. S. Bach — Air"},stream_url:"/audio/bach-air.mp3"}
@@ -148,7 +147,7 @@ if re.search(r'\$\{\s*u[0-9a-f]{6,16}\s*\?',s,re.S): raise SystemExit('mutated J
 PY
   then return 1; fi
   if grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$root/index.html" "$root/data/streams.json"; then return 1; fi
-  for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do valid_audio_file "$root/audio/$f" || return 1; done
+  for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do valid_audio_file "$root/audio/$f" || return 1; done
 }
 
 remove_managed_nginx_block(){
@@ -209,19 +208,19 @@ Radio Book: $RADIOBOOK_URL
 Note: technical same-origin proxy only; redistribution/rebroadcast rights are not asserted by this script.
 
 LOCAL AUDIOBOOK CACHE
-Alice's Adventures in Wonderland, Chapter 1 (LibriVox / Internet Archive):
-$ALICE_URL
+Лев Толстой — Учение Христа, изложенное для детей, главы 1–3 (LibriVox / Internet Archive):
+$TOLSTOY_TEACHINGS_URL
 LibriVox recordings are public domain in the USA; check local copyright status where applicable.
 
-The Adventures of Sherlock Holmes, A Scandal in Bohemia (LibriVox / Internet Archive):
-$SHERLOCK_URL
+Лев Толстой — Детство, Карл Иваныч (LibriVox / Internet Archive):
+$TOLSTOY_CHILDHOOD_URL
 LibriVox recordings are public domain in the USA; check local copyright status where applicable.
 
 LOCAL MUSIC CACHE
 Beethoven — Moonlight Sonata (Wikimedia Commons public-domain source):
 $BEETHOVEN_URL
 
-Chopin — Nocturne No. 2 (Wikimedia Commons CC0 source):
+Chopin — Nocturne No. 2 (Wikimedia Commons source):
 $CHOPIN_URL
 
 J. S. Bach — Air (Wikimedia Commons public-domain source):
@@ -238,7 +237,7 @@ publish_staged_site(){
   [[ -e "$WWW_DIR/data/history.json" ]] && cp -a -- "$WWW_DIR/data/history.json" "$backup/history.json"
   tmp="$WWW_DIR/.index.html.safe-audio.tmp"; install -m 0644 "$staged/index.html" "$tmp"; mv -f -- "$tmp" "$WWW_DIR/index.html"
   for f in streams.json history.json; do tmp="$WWW_DIR/data/.${f}.safe-audio.tmp"; install -m 0644 "$staged/data/$f" "$tmp"; mv -f -- "$tmp" "$WWW_DIR/data/$f"; done
-  for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do tmp="$WWW_DIR/audio/.${f}.safe-audio.tmp"; install -m 0644 "$staged/audio/$f" "$tmp"; mv -f -- "$tmp" "$WWW_DIR/audio/$f"; done
+  for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do tmp="$WWW_DIR/audio/.${f}.safe-audio.tmp"; install -m 0644 "$staged/audio/$f" "$tmp"; mv -f -- "$tmp" "$WWW_DIR/audio/$f"; done
   log "[OK] STREAM safe-audio опубликован; backup предыдущих frontend/data: $backup"
 }
 
@@ -250,14 +249,14 @@ install_safe_audio(){
   staged="$(mktemp -d)"; mkdir -p "$staged/data" "$staged/audio"
   if ! cp -a -- "$WWW_DIR/index.html" "$staged/index.html" || ! patch_frontend "$staged/index.html" || ! write_catalog "$staged/data/streams.json"; then rm -rf -- "$staged"; fail 'Не удалось собрать staged safe-audio site'; return 1; fi
   printf '{"history":[]}\n' > "$staged/data/history.json"
-  for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if ! cp -a -- "$CACHE_DIR/$f" "$staged/audio/$f"; then rm -rf -- "$staged"; fail "Не удалось staged-copy: $f"; return 1; fi; done
+  for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if ! cp -a -- "$CACHE_DIR/$f" "$staged/audio/$f"; then rm -rf -- "$staged"; fail "Не удалось staged-copy: $f"; return 1; fi; done
   if ! validate_staged_site "$staged"; then rm -rf -- "$staged"; fail 'Staged safe-audio site не прошёл fail-closed validation'; return 1; fi
   if ! ensure_radio_book_proxy; then rm -rf -- "$staged"; return 1; fi
   if ! publish_staged_site "$staged"; then rm -rf -- "$staged"; return 1; fi
   rm -rf -- "$staged"; write_source_manifest
   printf '%s\n' 'safe-audio' > "$APP_DIR/.stream_audio_mode"; chmod 0600 "$APP_DIR/.stream_audio_mode"
   log '[OK] Browser policy: только same-origin /data/* и /audio/*; внешних audio/API origin в frontend/catalog нет'
-  log '[OK] 6 каналов: 1 Radio Book proxy + 2 локальных LibriVox + 3 локальных public-domain/CC0 music'
+  log '[OK] 6 каналов: 1 Radio Book proxy + 2 локальных русских LibriVox + 3 локальных public-domain/Commons music'
 }
 
 status_safe_audio(){
@@ -265,7 +264,7 @@ status_safe_audio(){
   echo 'STREAM SAFE AUDIO STATUS'
   if [[ -s "$WWW_DIR/data/streams.json" ]] && jq -e '(.mounts|length)==6 and ([.mounts[].stream_url|startswith("/audio/")]|all) and ([.mounts[].stream_url|contains("://")|not]|all)' "$WWW_DIR/data/streams.json" >/dev/null 2>&1; then echo '[OK] streams.json: 6 same-origin channels'; else echo '[FAIL] streams.json'; bad=1; fi
   if grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$WWW_DIR/index.html" "$WWW_DIR/data/streams.json" 2>/dev/null; then echo '[FAIL] frontend/catalog содержит внешний origin'; bad=1; else echo '[OK] frontend/catalog: external origins отсутствуют'; fi
-  for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if valid_audio_file "$WWW_DIR/audio/$f"; then echo "[OK] local: $f"; else echo "[FAIL] local: $f"; bad=1; fi; done
+  for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if valid_audio_file "$WWW_DIR/audio/$f"; then echo "[OK] local: $f"; else echo "[FAIL] local: $f"; bad=1; fi; done
   if [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]]; then echo '[CI] nginx proxy status skipped'; elif grep -Fq "$MARK_BEGIN" "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_ssl_verify on;' "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_pass_request_headers off;' "$NGINX_CONF" 2>/dev/null; then echo '[OK] Radio Book same-origin nginx proxy configured, TLS verify=ON, client headers stripped'; else echo '[FAIL] Radio Book nginx proxy missing/incomplete'; bad=1; fi
   return "$bad"
 }
