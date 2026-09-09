@@ -7,6 +7,7 @@ CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
 RKN_HEALTH_SERVICE="remnanode-rkn-scanner-health.service"
 RKN_HEALTH_TIMER="remnanode-rkn-scanner-health.timer"
 RKN_UFW_PATH="remnanode-rkn-scanner-ufw.path"
+RKN_PATCHED_MANAGER_SHA256="a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244"
 
 log(){ printf '%s\n' "$*"; }
 fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
@@ -14,7 +15,7 @@ need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || { fail 'Запусти от root';
 need_python(){ command -v python3 >/dev/null 2>&1 || { fail 'Для детерминированного runtime patch нужен python3'; return 1; }; }
 
 patch_rkn_manager(){
-  local target="$1"
+  local target="$1" got
   [[ -s "$target" ]] || { fail "RKN manager не найден: $target"; return 1; }
   need_python
   python3 - "$target" <<'PY'
@@ -71,7 +72,9 @@ PY
   grep -Fq 'validate_scanner_set' "$target" || { fail 'RKN sanity patch не применён'; return 1; }
   grep -Fq 'last-good-tspu.ipset' "$target" || { fail 'RKN rollback patch не применён'; return 1; }
   grep -Fq '.safe-update-running' "$target" || { fail 'RKN update-lock patch не применён'; return 1; }
-  log '[OK] RKN manager усилен sanity-check + last-good rollback + update lock'
+  got="$(sha256sum "$target" | cut -d' ' -f1)"
+  [[ "$got" == "$RKN_PATCHED_MANAGER_SHA256" ]] || { fail "patched RKN SHA256 mismatch: $got"; return 1; }
+  log "[OK] RKN manager усилен и аттестован: $got"
 }
 
 patch_selfsteal_manager(){
