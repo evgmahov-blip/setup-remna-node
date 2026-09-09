@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-281448d9081b8c61cb8997190b63c2cb71ae178e}"
+MODULE_REF="${REMNANODE_REPO_REF:-52a25219dd2e9efd985d0daa439ae9c98da1e1c0}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
+RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
 LEGACY_RAW="https://raw.githubusercontent.com/${REPO}/${LEGACY_COMMIT}"
@@ -16,10 +17,10 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
-  [production/selfsteal-site-manager.sh]="92fccc97ea986c0fc09a1de2c2d8b7e7f3c614f369baf82808a6fc8d2629034d"
+  [production/selfsteal-site-manager.sh]="633200763bf9fdad85c87368449675d855a32c52d5607abb54714640a33f8a1e"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
-  [production/next-runtime-guards.sh]="10ca68be8c80c011774fbe84b65005f7fdf1e83e0d8b0903ec8a67ea45527503"
+  [production/next-runtime-guards.sh]="58f91e5a4bf47488c8babda19f37bd44a1c71b6c12f08e689f25cabe413f3ddb"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
@@ -73,7 +74,7 @@ runtime_guard_file(){
 run_runtime_guard(){
   local f
   f="$(runtime_guard_file)" || return 1
-  APP_DIR="$APP_DIR" bash "$f" "$@"
+  APP_DIR="$APP_DIR" RKN_UPDATE_LOCK_MAX_MINUTES="$RKN_UPDATE_LOCK_MAX_MINUTES" bash "$f" "$@"
 }
 
 prepare_selfsteal_manager(){
@@ -87,7 +88,7 @@ prepare_rkn_manager(){
   ensure_python3_for_patch >&2 || return 1
   fetch_module production/rkn-watcher-manager.sh "$f" || return 1
   g="$(runtime_guard_file)" || return 1
-  APP_DIR="$APP_DIR" bash "$g" patch-rkn "$f" >&2 || return 1
+  APP_DIR="$APP_DIR" RKN_UPDATE_LOCK_MAX_MINUTES="$RKN_UPDATE_LOCK_MAX_MINUTES" bash "$g" patch-rkn "$f" >&2 || return 1
   printf '%s' "$f"
 }
 
@@ -111,6 +112,13 @@ rkn_guard_active(){
   [[ -s "$APP_DIR/rkn-safe/.scanner-guard-active" ]] \
     && command -v iptables >/dev/null 2>&1 \
     && iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1
+}
+
+rkn_update_lock_state(){
+  local lock="$APP_DIR/rkn-safe/.safe-update-running" stale=''
+  [[ -e "$lock" ]] || { printf 'none'; return 0; }
+  stale="$(find "$lock" -mmin "+${RKN_UPDATE_LOCK_MAX_MINUTES}" -print -quit 2>/dev/null || true)"
+  [[ -n "$stale" ]] && printf 'stale' || printf 'active'
 }
 
 sync_rkn_watch(){ run_runtime_guard sync-rkn-watch; }
@@ -137,7 +145,7 @@ prepare_legacy_for_next(){
   tmp="${f}.next"
   rm -f "$tmp"
   if ! awk -v tref="$LEGACY_TEMPLATES_REF" -v lcommit="$LEGACY_COMMIT" '
-    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0; reg_done=0; pin_telemt=0 }
+    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0; reg_done=0; pin_telemt=0; telemt_label=0; telemt_menu=0; uninstall_marker=0 }
     /# Выбор протокола шифрования/ {
       print "    # NEXT: July base always installs Reality/SelfSteal; modern transports are generated later."
       print "    log \"${INFO} NEXT: базовая схема Reality/SelfSteal; XHTTP/RAW/Hysteria2 настраиваются отдельно.\""
@@ -157,12 +165,21 @@ prepare_legacy_for_next(){
     /base_url="https:\/\/raw\.githubusercontent\.com\/evgmahov-blip\/setup-remna-node\/custom\/vendor\/telemt-install"/ {
       sub(/\/custom\//, "/" lcommit "/"); pin_telemt=1; print; next
     }
+    /echo " 11\) ✈️  Установка и управление Telemt \/ MTProto"/ {
+      print "        echo \" 11) ⛔ Telemt / MTProto отключён в NEXT (конфликт host nginx stream/ssl_preread с Xray :443)\""; telemt_label=1; next
+    }
+    /^[[:space:]]*6\) uninstall_and_rollback ;;/ {
+      print "            6) printf \"uninstall\\n\" > \"${NEXT_ACTION_FILE:-/tmp/remnanode-next-legacy-action}\"; uninstall_and_rollback ;;"; uninstall_marker=1; next
+    }
+    /^[[:space:]]*11\) run_telemt_installer ;;/ {
+      print "            11) log \"${WARNING} Telemt отключён в NEXT: его site-stub ставит host nginx stream/ssl_preread на public 443 и конфликтует с Xray.\"; pause_prompt ;;"; telemt_menu=1; next
+    }
     /^    register_globally$/ {
       print "    : # NEXT: bypass-команда remnanode не регистрируется; post-processing живёт в NEXT"
       reg_done=1; next
     }
     { print }
-    END { if (!proto_done || !decoy_done || !pin_url || !pin_root || !reg_done || !pin_telemt) exit 42 }
+    END { if (!proto_done || !decoy_done || !pin_url || !pin_root || !reg_done || !pin_telemt || !telemt_label || !telemt_menu || !uninstall_marker) exit 42 }
   ' "$f" > "$tmp"; then
     rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Не удалось безопасно адаптировать July base"; return 1
   fi
@@ -170,14 +187,17 @@ prepare_legacy_for_next(){
      || grep -Fq 'read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain' "$tmp" \
      || grep -Fq 'node-templates/archive/refs/heads/main.zip' "$tmp" \
      || grep -Fq 'setup-remna-node/custom/vendor/telemt-install' "$tmp" \
+     || grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$tmp" \
      || grep -q '^    register_globally$' "$tmp"; then
-    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/bypass/prompt маркеры"; return 1
+    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/bypass/unsafe Telemt/prompt маркеры"; return 1
   fi
   grep -Fq "node-templates-${LEGACY_TEMPLATES_REF}" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy template repo root не закреплён"; return 1; }
   grep -Fq "setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt legacy source не закреплён"; return 1; }
+  grep -Fq 'Telemt отключён в NEXT' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt safety gate не применён"; return 1; }
+  grep -Fq 'NEXT_ACTION_FILE' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy uninstall marker не применён"; return 1; }
   bash -n "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Адаптированный July base не прошёл bash -n"; return 1; }
   chmod 0755 "$tmp"; mv -f "$tmp" "$f"
-  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates/Telemt; bypass remnanode отключён"
+  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates; Telemt отключён из-за конфликта public 443; bypass remnanode отключён"
 }
 
 compose_fingerprint(){
@@ -218,41 +238,58 @@ cleanup_rkn_watch_after_uninstall(){
 }
 
 run_legacy(){
-  local f="$WORK_DIR/setup_node-legacy.sh" rc before after
+  local f="$WORK_DIR/setup_node-legacy.sh" rc=0 before after action_file action=''
   echo -e "${GREEN}[STABLE 07.07]${NC} Запускаю зафиксированную рабочую базу."
   fetch_url "${LEGACY_RAW}/setup_node.sh" "$f" "setup_node.sh@${LEGACY_COMMIT}" "$LEGACY_SHA256" || return 1
   prepare_legacy_for_next "$f" || return 1
   remove_legacy_global_command
+  action_file="$WORK_DIR/.legacy-action"
+  rm -f "$action_file"
   before="$(compose_fingerprint)"
-  if bash "$f"; then
+  if NEXT_ACTION_FILE="$action_file" bash "$f"; then
     :
   else
     rc=$?
-    remove_legacy_global_command
-    return "$rc"
   fi
   remove_legacy_global_command
   after="$(compose_fingerprint)"
+  action="$(cat "$action_file" 2>/dev/null || true)"
+  rm -f "$action_file"
+
+  if [[ "$action" == uninstall ]]; then
+    cleanup_rkn_watch_after_uninstall
+    if [[ "$after" == MISSING ]]; then
+      echo -e "${GRAY}[NEXT] Нода удалена; RKN/self-heal cleanup выполнен.${NC}"
+    else
+      echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Legacy uninstall завершился не полностью; RKN self-heal/chain сняты, оставшиеся файлы ноды не восстанавливаю."
+    fi
+    return "$rc"
+  fi
 
   if [[ "$after" == MISSING ]]; then
-    echo -e "${GRAY}[NEXT] Нода отсутствует/удалена — никакой постобработки не выполняю.${NC}"
+    echo -e "${GRAY}[NEXT] Нода отсутствует/удалена — выполняю только cleanup защитных юнитов.${NC}"
     cleanup_rkn_watch_after_uninstall
-    return 0
+    return "$rc"
   fi
 
   restore_rkn_guard || echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Scanner guard восстановить не удалось."
   sync_rkn_watch || echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} RKN self-heal unit не синхронизирован."
+  restore_hysteria_mount || echo -e "${RED}[ОШИБКА]${NC} Cert bind Hysteria2 НЕ восстановлен — не применяй Hysteria2 профиль до исправления."
+
+  if (( rc != 0 )); then
+    echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} July base завершился с кодом $rc; восстановительные проверки выполнены, тяжёлую постобработку пропускаю."
+    return "$rc"
+  fi
 
   if [[ "$before" == "$after" ]]; then
-    echo -e "${GRAY}[NEXT] docker-compose.yml не менялся — SelfSteal/transport/network не трогаю.${NC}"
+    echo -e "${GRAY}[NEXT] docker-compose.yml не менялся — SelfSteal/transport/network не трогаю; Hysteria/RKN уже проверены.${NC}"
     return 0
   fi
 
-  echo -e "${GREEN}[NEXT]${NC} Compose изменён: выполняю только безопасную постобработку."
+  echo -e "${GREEN}[NEXT]${NC} Compose изменён: выполняю только безопасную тяжёлую постобработку."
   if [[ -d /var/www/html ]]; then
     run_selfsteal_default || echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} SelfSteal не обновлён; текущий webroot оставлен как есть."
   fi
-  restore_hysteria_mount || echo -e "${RED}[ОШИБКА]${NC} Cert bind Hysteria2 НЕ восстановлен — не применяй Hysteria2 профиль до исправления."
   run_rkn_default || echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} SAFE scanner protection не удалось активировать."
   echo -e "${GRAY}[NETWORK] Автоматический NEXT tuning отключён: сохраняю проверенный July sysctl baseline без понижения лимитов.${NC}"
 }
@@ -261,7 +298,7 @@ run_transport(){
   local f="$WORK_DIR/remnawave-transport-manager.sh" xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh" sig_ok='' minver=''
   fetch_module production/remnawave-transport-manager.sh "$f" || return 1
   echo
-  echo -e "${YELLOW}[REALITY]${NC} Пустой minClientVer оставляет дефолт Xray >= 26.3.27; более старые клиенты могут быть отклонены."
+  echo -e "${YELLOW}[REALITY]${NC} Пустой minClientVer оставляет дефолт Xray >= 26.3.27; старые клиенты могут быть отклонены."
   read -r -p 'minClientVer (пусто = дефолт Xray): ' minver || true
   if [[ -n "$minver" && ! "$minver" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
     echo -e "${RED}[ОШИБКА]${NC} minClientVer: допустим формат N, N.N или N.N.N"
@@ -304,13 +341,19 @@ run_xhttp_signature(){
 }
 
 rkn_selftest(){
-  local guard="$APP_DIR/rkn-safe/scanner-guard.sh" failed=0
+  local guard="$APP_DIR/rkn-safe/scanner-guard.sh" failed=0 lock_state
   echo '#################### НАЧАЛО ВЫВОДА: RKN WATCHER SELFTEST ####################'
   [[ -x "$guard" ]] || { echo '[FAIL] scanner-guard.sh отсутствует'; failed=1; }
   if [[ -x "$guard" ]]; then "$guard" validate && echo '[OK] TSPUIPS sanity-check' || { echo '[FAIL] TSPUIPS sanity-check'; failed=1; }; fi
   if command -v iptables >/dev/null 2>&1 && iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1; then echo '[OK] INPUT -> REMNA_RKN_SCANNERS'; else echo '[FAIL] INPUT jump отсутствует'; failed=1; fi
   systemctl is-enabled remnanode-rkn-scanner-boot.service >/dev/null 2>&1 && echo '[OK] boot restore enabled' || { echo '[FAIL] boot restore disabled'; failed=1; }
   systemctl is-enabled remnanode-rkn-scanner-update.timer >/dev/null 2>&1 && echo '[OK] daily update timer enabled' || { echo '[FAIL] daily update timer disabled'; failed=1; }
+  lock_state="$(rkn_update_lock_state)"
+  case "$lock_state" in
+    none) echo '[OK] SAFE update lock отсутствует' ;;
+    active) echo '[INFO] SAFE update lock активен и свежий' ;;
+    stale) echo '[FAIL] SAFE update lock протух; self-heal должен удалить его при следующей проверке'; failed=1 ;;
+  esac
   echo '#################### КОНЕЦ ВЫВОДА: RKN WATCHER SELFTEST ####################'
   return "$failed"
 }
@@ -398,6 +441,7 @@ print_profile_full(){
   echo "TRANSPORT: $transport"
   echo "PROFILE FILE: $profile"
   echo "UPDATED: $mtime"
+  echo 'ВАЖНО: это локально сгенерированный файл. Какой Config Profile реально назначен ноде, проверяй в Remnawave panel.'
   echo
   echo '=== ОПИСАНИЕ ХОСТА ==='
   echo "${remark:-$(basename "$profile")}" 
@@ -420,9 +464,10 @@ show_profiles(){
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║          ПРОСМОТР И КОПИРОВАНИЕ ПРОФИЛЕЙ REMNAWAVE        ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo "Текущий transport: ${active:-не задан}"
+    echo "Последний локально сгенерированный transport: ${active:-не задан}"
+    echo 'Назначенный в Remnawave Config Profile может отличаться — проверяй панель.'
     echo
-    echo ' 1) Показать ТЕКУЩИЙ профиль + Host полностью'
+    echo ' 1) Показать ПОСЛЕДНИЙ ЛОКАЛЬНЫЙ профиль + Host полностью'
     echo ' 2) XHTTP + REALITY'
     echo ' 3) RAW + REALITY'
     echo ' 4) Hysteria2 + TLS'
@@ -433,9 +478,9 @@ show_profiles(){
     case "${choice:-1}" in
       1)
         if [[ -n "$active" ]]; then
-          print_profile_full "$active" || echo 'Текущий transport задан, но его профиль отсутствует/повреждён.'
+          print_profile_full "$active" || echo 'Локальный transport marker задан, но его профиль отсутствует/повреждён.'
         else
-          echo 'Текущий transport не задан'
+          echo 'Локальный transport marker не задан'
         fi
         pause
         ;;
@@ -452,22 +497,25 @@ show_profiles(){
 
 show_status(){
   clear || true
-  local node=0 nginx=0 rkn=0 scanner_guard=0 scanner_state=0
+  local node=0 nginx=0 rkn=0 scanner_guard=0 scanner_state=0 lock_state
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode && node=1 || true
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnawave-nginx && nginx=1 || true
   [[ -x /usr/local/bin/rkn-watcher || -x /opt/rkn-watcher/rkn-watcher.sh ]] && rkn=1 || true
   [[ -s "$APP_DIR/rkn-safe/.scanner-guard-active" ]] && scanner_state=1 || true
   command -v iptables >/dev/null 2>&1 && iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 && scanner_guard=1 || true
+  lock_state="$(rkn_update_lock_state)"
   printf '  '; status_badge 'Remnawave node' "$node"; echo
   printf '  '; status_badge 'SelfSteal nginx' "$nginx"; echo
   printf '  '; status_badge 'RKN Watcher' "$rkn"; echo
   printf '  '; status_badge 'RKN scanner guard' "$scanner_guard"; echo
+  printf '  %-22s %s\n' 'RKN update lock:' "$lock_state"
   if (( scanner_state == 1 && scanner_guard == 0 )); then echo -e "  ${RED}[РАСХОЖДЕНИЕ] state=active, но INPUT jump отсутствует${NC}"; fi
+  [[ "$lock_state" == stale ]] && echo -e "  ${RED}[РАСХОЖДЕНИЕ] RKN update lock протух; self-heal удалит его при следующей проверке${NC}"
   echo
   printf '  %-22s %s\n' 'Stable base:' "$LEGACY_COMMIT"
   printf '  %-22s %s\n' 'Module commit:' "$MODULE_REF"
   printf '  %-22s %s\n' 'Node domain:' "$(cat "$APP_DIR/.node_domain" 2>/dev/null || echo '-')"
-  printf '  %-22s %s\n' 'Transport profile:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
+  printf '  %-22s %s\n' 'Local transport marker:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality SNI:' "$(cat "$APP_DIR/.reality_sni" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'SelfSteal site:' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo 'random (default)')"
   echo; echo -e "${BLUE}[PORTS]${NC}"; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:2222[[:space:]]|:80[[:space:]])' || true; pause
