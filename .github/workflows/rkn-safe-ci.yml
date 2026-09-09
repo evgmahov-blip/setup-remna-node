@@ -1,0 +1,84 @@
+name: rkn-safe-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+  pull_request:
+    paths:
+      - 'setup_node_next.sh'
+      - 'production/rkn-watcher-manager.sh'
+      - 'production/modules.sha256'
+      - '.github/workflows/rkn-safe-ci.yml'
+
+jobs:
+  validate-rkn-safe-mode:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and immutable pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n setup_node_next.sh
+          bash -n production/rkn-watcher-manager.sh
+          sha256sum -c production/modules.sha256
+
+          module_ref="$(sed -n 's/^MODULE_REF="${REMNANODE_REPO_REF:-\([0-9a-f]\{40\}\)}"$/\1/p' setup_node_next.sh)"
+          test "${#module_ref}" -eq 40
+
+          expected="$(awk '$2=="production/rkn-watcher-manager.sh" {print $1}' production/modules.sha256)"
+          wrapper_hash="$(sed -n 's/^  \[production\/rkn-watcher-manager.sh\]="\([0-9a-f]\{64\}\)"$/\1/p' setup_node_next.sh)"
+          test "$expected" = "$wrapper_hash"
+
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${module_ref}/production/rkn-watcher-manager.sh" \
+            -o /tmp/pinned-rkn-manager.sh
+          test "$(sha256sum /tmp/pinned-rkn-manager.sh | awk '{print $1}')" = "$expected"
+          bash -n /tmp/pinned-rkn-manager.sh
+
+      - name: Safe scanner guard invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=production/rkn-watcher-manager.sh
+
+          grep -Fq 'CHAIN="REMNA_RKN_SCANNERS"' "$f"
+          grep -Fq -- '--dports 80,443' "$f"
+          grep -Fq -- '-p udp --dport 443' "$f"
+          grep -Fq -- '--match-set TSPUIPS src -j DROP' "$f"
+
+          grep -Fq 'ENABLE_TSPUBLOCK="n"' "$f"
+          grep -Fq 'ENABLE_GOVIPS="n"' "$f"
+          grep -Fq 'AUTO_UPDATE="n"' "$f"
+          grep -Fq '{"enabled": False' "$f"
+
+          grep -Fq 'systemd-run --quiet --unit="$ROLLBACK_UNIT" --on-active=120s' "$f"
+          grep -Fq 'RandomizedDelaySec=1800' "$f"
+          grep -Fq 'rkn-watcher-update.timer rkn-watcher-boot.service' "$f"
+
+          if grep -Eq 'iptables[[:space:]]+-F[[:space:]]+INPUT|iptables[[:space:]]+-P[[:space:]]+INPUT|ufw.*reset' "$f"; then
+            echo 'Unsafe global firewall reset/policy change found'
+            exit 1
+          fi
+
+      - name: Generated guard syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -n "/<<'EOF_GUARD'/,/^EOF_GUARD$/p" production/rkn-watcher-manager.sh \
+            | sed '1d;$d;s/^  //' > /tmp/scanner-guard.sh
+          test -s /tmp/scanner-guard.sh
+          bash -n /tmp/scanner-guard.sh
+          grep -Fq 'REMNA_RKN_SCANNERS' /tmp/scanner-guard.sh
+          grep -Fq -- '--dports 80,443' /tmp/scanner-guard.sh
+          grep -Fq -- '-p udp --dport 443' /tmp/scanner-guard.sh
+
+      - name: NEXT installs safe mode by default
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'run_rkn_default' setup_node_next.sh
+          grep -Fq 'bash "$f" install-safe' setup_node_next.sh
+          grep -Fq "status_badge 'RKN scanner guard'" setup_node_next.sh
