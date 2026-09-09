@@ -159,9 +159,9 @@ deploy_stream(){
   if uniquify_dir "$src" "$uq"; then
     log '[OK] STREAM уникализирован через pinned uniquify-theme'
   else
-    rm -rf -- "$uq"; mkdir -p "$uq"; cp -a "$src"/. "$uq"/
-    printf '\n<!-- node-site-%s -->\n' "$(openssl rand -hex 16)" >> "$uq/index.html"
-    log '[WARN] uniquify-theme недоступен; применена базовая индивидуализация STREAM'
+    rm -rf -- "$tmpdir"
+    fail 'uniquify-theme не применился; немутированный STREAM публиковать запрещено'
+    return 1
   fi
   find "$uq" -mindepth 1 \( -name '.uniquify-manifest.txt' -o -name 'README.md' -o -name 'README.MD' \) -delete
   [[ -s "$uq/index.html" ]] || { rm -rf -- "$tmpdir"; fail 'STREAM: пустой index.html после сборки'; return 1; }
