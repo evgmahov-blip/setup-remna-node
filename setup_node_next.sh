@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-18346ddfb24395fc11dcf67e895cd4460ab36178}"
+MODULE_REF="${REMNANODE_REPO_REF:-281448d9081b8c61cb8997190b63c2cb71ae178e}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 REPO="evgmahov-blip/setup-remna-node"
@@ -19,7 +19,7 @@ declare -A MODULE_SHA256=(
   [production/selfsteal-site-manager.sh]="92fccc97ea986c0fc09a1de2c2d8b7e7f3c614f369baf82808a6fc8d2629034d"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
-  [production/next-runtime-guards.sh]="801296145878d1bf830b69bf709eac5db3cd714a18fcfd233ca2733590235d3a"
+  [production/next-runtime-guards.sh]="10ca68be8c80c011774fbe84b65005f7fdf1e83e0d8b0903ec8a67ea45527503"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
