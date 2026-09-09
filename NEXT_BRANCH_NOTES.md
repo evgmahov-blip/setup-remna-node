@@ -1,46 +1,52 @@
-# Next branch scope
+# REMNANODE NEXT — production status
 
-This branch is intentionally based on the known-working July 7 state and keeps its dataplane architecture.
+This document replaces the old pre-merge branch notes. PR #2 has completed review, live canary validation and production merge into `custom`.
 
-## Added
+## Final state
 
-- `setup_node_next.sh` — unified color-coded menu
-- `production/remnawave-transport-manager.sh`
-  - XHTTP + REALITY
-  - RAW + REALITY
-  - Hysteria2 + TLS
-  - local SelfSteal REALITY mode
-  - optional external validated SNI mode
-  - generated Remnawave Config Profiles and Host hints
-- `production/rkn-watcher-manager.sh`
-  - pinned and checksum-verified Balbuto/RKN-Watcher integration
-- CI for shell syntax, pinned module checksums, runtime Xray validation and generated profiles
+- Production merge commit: `e8fb95d2b9df06bb96625850409cd922606b055d`
+- Pinned July base: `34aeaa99aa1a5c21fc4f9d0c976d38607d025353`
+- Pinned runtime module commit: `5e54fd49e7b8500fe337f5df442bfa568075a147`
+- Live old-node canary: PASS
+- Real client traffic after upgrade: PASS
+- Six production CI workflows on the PR head: PASS
+- Six production CI workflows on the merge commit on `custom`: PASS
 
-## Claude round-2 review fixes
+## Production architecture
 
-Applied before live testing:
+- XHTTP + REALITY — TCP/443
+- RAW + REALITY — TCP/443
+- Hysteria2 + TLS — UDP/443
+- XHTTP + Hysteria2 combined — TCP/443 + UDP/443
+- public TCP/443 owner remains Xray/rw-core
+- nginx remains behind `/dev/shm/nginx.sock` using the established PROXY-protocol fallback design
+- no host nginx `stream` / `ssl_preread` layer in front of Xray
+- Telemt remains disabled in NEXT because its historical host-nginx mode conflicts with the public-443 invariant
 
-- XHTTP REALITY server mode changed to `auto` so default REALITY clients using `stream-one` are accepted.
-- Hysteria2 checks that certs are visible inside `remnanode`; adding a missing cert bind requires explicit confirmation and recreates only `remnanode`.
-- SelfSteal REALITY refuses nginx Unix-socket configs that do not actually listen with `ssl proxy_protocol`.
-- New root modules are fetched from an immutable commit and verified by embedded SHA256 values.
-- SNI pool parsing is mawk-compatible and SNI validation checks TLS 1.3, h2, certificate chain and hostname match.
-- Generated profiles are runtime-tested by rw-core/Xray before atomic rename; a failed candidate does not replace the previous profile.
-- XHTTP signature is preserved on regeneration, is reversible, and is opt-in for the first live test.
-- RKN Watcher precheck handles non-SSH consoles fail-safe and only treats `whitelist.ips` as IP/CIDR allow entries.
+## Canary findings closed
 
-## Still requires live validation
+The live old-node canary exposed two operator-facing defects and both were fixed before merge:
 
-- Remnawave must be verified to transport XHTTP `extra` to clients byte-for-byte before enabling the optional signature in production.
-- REALITY `minClientVer` policy must be chosen against the actual client fleet; the generator currently leaves Xray's default unless explicitly overridden.
-- First live-test order: RAW + REALITY SelfSteal -> XHTTP without signature -> XHTTP with signature -> Hysteria2 last.
-- Do not merge into `custom` until the controlled live test has passed.
+1. RKN `[Y/n]` confirmation now normalizes CR/whitespace/case, accepts supported yes/no forms and reprompts invalid answers instead of silently choosing `No`.
+2. The nested July menu now says `0) ↩️ Назад в REMNANODE NEXT`, and its successful-install hint points to `remnanode-next` rather than the removed legacy bypass command.
 
-## Not allowed in this branch
+## SelfSteal / STREAM
 
-- nginx stream/ssl_preread in front of public TCP/443
-- automatic rotation of a working REALITY SNI
-- automatic application of RKN Watcher firewall policy during normal node installation
-- merging to `custom` before live validation
+The production STREAM implementation publishes exactly six local same-origin channels. Browser-visible audio/catalog/history paths are salted per node. Production audio downloads are checksum-pinned and limited to 8 MiB per file. External browser runtime origins from the abandoned Radio Book experiment are not present.
 
-See `REVIEW_CLAUDE.md` for the external review checklist.
+Accepted residuals remain documented in `REVIEW_CLAUDE.md`.
+
+## Operator entrypoint
+
+Use `setup_node_next.sh` and then `remnanode-next`.
+
+`setup_node.sh` remains only as the historical July implementation that NEXT consumes from an immutable commit. It is not the normal production management entrypoint.
+
+## Evidence
+
+- `CANARY_ACCEPTANCE_2026-09-09.md` — final live canary record
+- `REVIEW_CLAUDE.md` — external-review and hardening context
+- `REVIEW_CHECKLIST.md` — final gate status
+- `production/modules.sha256` — runtime module checksums
+
+The next separate phase is AINOC fleet integration. No AINOC production changes are part of this installer release.

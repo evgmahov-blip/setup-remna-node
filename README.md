@@ -1,161 +1,201 @@
-# 🚀 RemnaNode Advanced Installer & Optimizer CLI (v1.7.1)
+# REMNANODE NEXT — production installer
 
-[![Лицензия](https://img.shields.io/badge/Лицензия-MIT-blue.svg)](LICENSE)
-[![Платформа](https://img.shields.io/badge/ОС-Ubuntu%20%7C%20Debian-orange.svg)](#)
-[![Язык](https://img.shields.io/badge/Язык-Bash-blue.svg)](#)
-[![Xray-Core](https://img.shields.io/badge/Xray--Core-v1.8.0%20%2B-green.svg)](https://github.com/XTLS/Xray-core)
+Production installer and management CLI for Remnawave nodes on Ubuntu/Debian.
 
-**RemnaNode Advanced Installer** — это профессиональный, полностью русифицированный интерактивный скрипт автоматического развертывания, сетевой оптимизации, маскировки и мониторинга ноды управления **Remnawave** (`remnanode`) на серверах Ubuntu и Debian.
+The current production path is **`setup_node_next.sh` / `remnanode-next`**. The historical `setup_node.sh` is retained only as the pinned July base used internally by NEXT and should not be used as the normal operator entrypoint.
 
-Начиная с версии **v1.7.1**, скрипт содержит встроенную принудительную проверку прав root на первой строчке запуска, модуль **комплексного мульти-тестирования сервера (бенчмарки YABS, Censorcheck, iPerf3)**, полноценный вынос логов Xray на хост и авторегистрацию при удаленном запуске одной строкой.
+## Production status
 
----
+- Live old-node canary: **PASS**.
+- A real client connected and carried traffic after the upgrade.
+- Public TCP/443 remains owned by Xray/rw-core.
+- nginx remains behind `/dev/shm/nginx.sock` with PROXY protocol.
+- No host nginx `stream` / `ssl_preread` layer is inserted in front of Xray.
+- Telemt / MTProto is disabled in NEXT because its historical host-nginx mode conflicts with Xray ownership of public TCP/443.
+- RKN scanner protection uses a dedicated chain and safe rollback/restore/update logic.
+- Runtime modules are fetched from an immutable commit and verified by SHA256.
 
-## 🎨 Архитектурный дизайн проекта
+See `CANARY_ACCEPTANCE_2026-09-09.md` for the final live acceptance record.
 
-Нода разворачивается в изолированном Docker-окружении, состоящем из двух контейнеров, общающихся по сверхбыстрым Unix-сокетам в оперативной памяти:
+## Supported transport profiles
 
+NEXT generates Remnawave Config Profiles and Host hints for:
+
+- **XHTTP + REALITY** — TCP/443
+- **RAW + REALITY** — TCP/443
+- **Hysteria2 + TLS** — UDP/443
+- **XHTTP + Hysteria2** — TCP/443 + UDP/443
+
+XHTTP signature support is opt-in. REALITY `minClientVer` is operator-controlled; leaving it blank keeps the Xray default.
+
+> Hysteria2/QUIC uses TLS 1.3 semantics. The TLS 1.2 preference used for ordinary HTTPS traffic is not forced onto Hysteria2.
+
+## SelfSteal
+
+NEXT keeps nginx behind the Xray fallback Unix socket and supports multiple decoy-site modes.
+
+The production STREAM mode is local-only at browser runtime:
+
+- exactly six local audio channels;
+- browser-visible audio/catalog/history paths are salted per node;
+- production audio assets are SHA256-pinned;
+- each source download is capped at 8 MiB;
+- no browser dependency on Archive.org, Wikimedia, RadioBook or other runtime origins;
+- `active` and `listeners` runtime tokens are protected from theme mutation.
+
+Accepted residual: the same static audio content can still be correlated by content/hash across already-suspected nodes. There is no nginx per-client rate limit for the static audio files.
+
+## RKN safe scanner guard
+
+The RKN integration is intentionally narrow:
+
+- dedicated `REMNA_RKN_SCANNERS` chain;
+- known scanner set only;
+- DROP only for tcp/80, tcp/443 and udp/443;
+- current SSH IPv4 and panel IPv4 are allowed before scanner DROP rules;
+- node control port is checked before activation;
+- 120-second rollback protects first activation;
+- permanent mode enables boot restore and randomized daily updates;
+- list updates use sanity checks and last-good rollback;
+- `[Y/n]` input is normalized for CR/whitespace/case and invalid input is re-prompted instead of silently becoming `No`.
+
+## Immutable production set
+
+July base:
+
+```text
+34aeaa99aa1a5c21fc4f9d0c976d38607d025353
 ```
-                  Входящий трафик (Порт 443 TCP/UDP)
-                                 │
-                                 ▼
-                     ┌───────────────────────┐
-                     │   Xray-Core (Host)    │ <─── [Сертификаты в /etc/xray/certs]
-                     └───────────┬───────────┘
-                                 │
-                 (Не-VPN HTTP трафик / Fallback)
-                                 │
-                                 ▼ (Unix-сокет: /dev/shm/nginx.sock)
-                     ┌───────────────────────┐
-                     │   Nginx (Decoy Site)  │ <─── [Мутированный HTML / Selfsteal]
-                     └───────────────────────┘
+
+Production code merge/freeze commit:
+
+```text
+e8fb95d2b9df06bb96625850409cd922606b055d
 ```
 
-* **Xray на хост-сети**: Нода Xray слушает внешний порт `443` хоста. Вся обработка VLESS Reality, VLESS+TLS и VLESS+TLS+xHTTP происходит на первом рубеже.
-* **Unix-сокеты в Shared Memory (`/dev/shm`)**: Для пересылки не-VPN трафика (активного зондирования цензоров или обычных браузеров) используется сокет в оперативной памяти хоста. Это полностью исключает накладные расходы сетевого стека TCP/IP.
-* **Nginx на втором рубеже (Всегда активен)**: Контейнер `remnawave-nginx` принимает перенаправленный трафик от Xray по Unix-сокету и отдает уникальный, глубоко мутированный сайт-заглушку. Работает во всех режимах.
+Immutable runtime module commit pinned by the wrapper:
 
----
+```text
+5e54fd49e7b8500fe337f5df442bfa568075a147
+```
 
-## 🔥 Ключевые возможности
+Important module checksums:
 
-### 1. 🧪 Мульти-тестирование и диагностика сервера (Новое в v1.7.0+)
-Встроенный защищенный модуль проведения бенчмарков и тестов обхода цензуры (Пункт 10):
-* **Censorcheck (Геоблоки и DPI)**: Тестирование доступности российских и зарубежных сайтов, а также проверка провайдера на наличие активного вмешательства DPI.
-* **YABS (Yet Another Bench Script)**: Замер скорости дисков (fio), процессора (Geekbench) и пропускной способности сети.
-* **iPerf3 RU Speedtest**: Автоматический замер скорости до серверов внутри РФ.
-* **IP Check Place**: Проверка репутации IP (Proxy/Spam/Residential Score).
-* **Стресс-тесты CPU & Memory**: Тестирование железа через утилиту `sysbench`.
-* **Безопасность**: Загрузка внешних скриптов производится строго по протоколу **TLS 1.2+**, а выполнение изолировано в субшеллах (subshell) для защиты родительского процесса от сбоев.
+```text
+RKN manager:
+283414299df4e12e3d12b586ab71b1278968fa77c5ebf85eb61f37ee5bcf68e9
 
-### 2. 🎭 Умная маскировка и мутатор `uniquify-theme` (Mrvibecodic)
-Скрипт полностью автоматизирует развертывание 8 профессиональных, адаптивных шаблонов сайтов-заглушек:
-* `endless-verify` — страница авторизации/верификации сервиса.
-* `esports-stream-template` — стриминговый киберспортивный портал.
-* `levelup-hub` — геймерский хаб и новостной игровой сайт.
-* `playza-game-catalog` — каталог онлайн-игры с карточками и детальным описанием.
-* `rybaliti-2.0` — тематический форум и блог о рыбалке (популярно в РФ).
-* `screenwire-digest` — дайджест новостей из мира IT и технологий.
-* `vibrai-photo-editor` — интерфейс веб-редактора фотографий.
-* `worldzoo-stream-template` — сайт трансляций из зоопарков.
+NEXT runtime guards:
+620797d0677d091d6550894e32fea58ce7f2adf2f125d6f6ccfb217a7b3382fd
 
-**Управление маскировкой:**
-* В меню добавлен пункт **`9) 🎭 Смена маскировочного шаблона сайта (Selfsteal)`**.
-* Вы можете сменить шаблон вашего сайта-декоя в один клик: либо **случайно (Рандомно)**, либо **выбрать конкретный шаблон из списка**. Скрипт сам запустит мутацию и обновит сайт.
+SelfSteal manager:
+b783e94f2ef3764b2e397cba9eb96aeab88d7da11da017a2c867054f9546a84a
+```
 
-### 3. ⚡ Поддержка трех протоколов (Reality, TLS, xHTTP)
-Скрипт поддерживает гибкий выбор шифрования трафика:
-* **VLESS Reality (Selfsteal)**: Прямая маскировка под крупный внешний сайт (например, `github.com`).
-* **VLESS+TLS**: Классическое шифрование с выпуском настоящих Let's Encrypt SSL-сертификатов на ваш личный домен ноды.
-* **VLESS+TLS+xHTTP**: Поддержка передового, устойчивого к блокировкам транспорта xHTTP. SSL сертификаты автоматически прописываются в секцию ноды в `docker-compose.yml` и обновляются по крону.
+The wrapper verifies runtime modules against embedded SHA256 values before execution.
 
-### 4. ⚙️ Системный Тюнинг и Оптимизация (BBR & Hardening)
-Скрипт автоматически анализирует объем оперативной памяти сервера и применяет оптимизированные параметры ядра `sysctl` и лимиты `/etc/security/limits.d/`:
-* **BBR**: Принудительно активирует алгоритм контроля сетевых перегрузок TCP BBR от Google и планировщик пакетов `fq` для минимизации потерь пакетов и ускорения передачи данных.
-* **Профиль HIGHLOAD** (для VPS с ОЗУ $\ge 2$ ГБ): Разгоняет лимиты дескрипторов файлов `nofile` до `1 048 576` и емкость таблицы отслеживания сетевых соединений `nf_conntrack` до `1 048 576` для работы под экстремальными нагрузками.
-* **Профиль SAFE** (для VPS с ОЗУ $< 2$ ГБ): Бережные, экономные лимиты во избежание сбоев из-за нехватки оперативной памяти.
+## Quick start
 
-### 5. 🔌 Управление портами и недеструктивный UFW
-* **Анти-локаут**: Скрипт сканирует запущенные сокеты и автоматически определяет ваш текущий порт SSH (даже нестандартный). Он вносит разрешающее правило UFW перед включением фаервола, гарантируя, что администратор **не потеряет доступ** к серверу.
-* **Недеструктивный UFW**: При настройке фаервол **НЕ сбрасывает** сторонние системные правила (в отличие от `ufw reset`), а точечно открывает веб-порты `80/443`, порт управления `2222` (строго для IP панели) и ваши кастомные клиентские порты из Пункта 8.
-* **Авто-открытие при установке**: Кастомные порты Xray теперь можно ввести и открыть прямо во время первой установки.
-
-### 6. 🔐 Множественные варианты выпуска SSL-сертификатов
-Скрипт поддерживает три метода прохождения валидации Let's Encrypt для TLS и xHTTP:
-1. **Cloudflare DNS-01 API**: Выпуск скрытого Wildcard-сертификата (`*.домен`), скрывающего структуру ваших поддоменов от систем логирования Certificate Transparency. Полная совместимость с современными **API Tokens** и Global API Keys.
-2. **Certbot Standalone (HTTP-01)**: Классический метод с автоматическим временным открытием порта 80 в UFW.
-3. **Gcore DNS-01 API**: Автоматическая установка плагина `certbot-dns-gcore` через pip и выпуск Wildcard-сертификатов.
-* **Renewal Hook**: Настроен автоматический крон-скрипт обновления сертификатов Let's Encrypt с их автокопированием в защищенную папку ноды и перезапуском контейнера.
-
-### 7. 📊 Продвинутая диагностика и вынос логов (Исправлено в v1.6.5)
-* Логи Xray (access / error) теперь транслируются на хост напрямую из Supervisord-папки по пути `/var/log/remnanode/node/xray.out.log` (и `xray.err.log`). Это полностью решило проблему пустых логов на хосте.
-* Настроена автоматическая ежедневная ротация `logrotate` при достижении размера файла **50 МБ** с хранением до 7 архивных копий.
-* Интерактивное подменю диагностики (Пункт 7) выводит загрузку CPU, ОЗУ, диска хоста, статусы докеров и размеры всех файлов логов в реальном времени.
-
----
-
-## 🚀 Быстрый старт
-
-Запустите скрипт одной командой на вашем чистом сервере Ubuntu/Debian:
+Run as root, or download with your normal user and execute with `sudo`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/setup_node.sh | sudo bash
+curl -fsSLo /tmp/setup_node_next.sh \
+  https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/setup_node_next.sh
+sudo bash /tmp/setup_node_next.sh
 ```
 
-Или альтернативный вариант через `wget`:
+After the first normal file-based run, the supported global command is:
+
 ```bash
-wget -qO- https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/custom/setup_node.sh | sudo bash
+remnanode-next
 ```
 
-> **Важно**: При первом запуске скрипт автоматически зарегистрирует себя в глобальной CLI-оболочке хоста. В дальнейшем вы сможете вызывать интерактивное меню из любой папки терминала простой командой:
-> ```bash
-> remnanode
-> ```
+Do **not** use `remnanode` as the management command. NEXT removes that legacy global command because it bypasses NEXT post-processing and safety guards.
 
----
+For a reproducible audit run of the frozen production code, download the wrapper from the exact production merge commit instead of the moving `custom` branch:
 
-## 🎛️ Интерактивное меню CLI
-
-После запуска команды `remnanode` вам будет доступно следующее русифицированное меню:
-
-```
-  ========================================================
-  🚀 REMNANODE ИНТЕРАКТИВНОЕ УПРАВЛЕНИЕ НОДОЙ (v1.7.1)
-  ========================================================
-
-📌 Текущий статус ноды: Активна (Запущена)
---------------------------------------------------
- 1) 🚀 Первоначальная настройка и запуск ноды
- 2) 🔐 Выпуск и обновление SSL при смене домена ноды
- 3) ⚡ Установка/Обновление кастомной версии Xray-Core
- 4) 🔌 Смена IP адреса панели (Обновление правил UFW)
- 5) 🌐 Управление IPv6 (Вкл / Откл)
- 6) 🗑️  Полное удаление ноды с откатом всех изменений
- 7) 📊 Диагностика и просмотр логов ноды
- 8) 🔌 Управление клиентскими портами Xray и UFW
- 9) 🎭 Смена маскировочного шаблона сайта (Selfsteal)
- 10) 🧪 Запустить мульти-тесты и диагностику сервера (YABS/DPI)
- 0) Выход
---------------------------------------------------
-Выберите действие [0-10]: 
+```bash
+curl -fsSLo /tmp/setup_node_next.sh \
+  https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/e8fb95d2b9df06bb96625850409cd922606b055d/setup_node_next.sh
+sudo bash /tmp/setup_node_next.sh
 ```
 
----
+The wrapper at that commit still fetches its production runtime modules from the immutable module commit `5e54fd49e7b8500fe337f5df442bfa568075a147` and verifies their checksums.
 
-## ⚙️ Требования к серверу
-* **Операционная система**: Ubuntu 20.04 / 22.04 / 24.04 LTS или Debian 11 / 12.
-* **Права**: Доступ с правами `root`.
-* **Домен**: Зарегистрированный домен (A-запись должна указывать на IP вашего сервера ноды).
+## Main NEXT menu
 
----
+`remnanode-next` exposes the supported operator surface:
 
-## 🛡️ Безопасность и Отказ от ответственности
+1. installation and normal node management through the pinned July base;
+2. consolidated node/ports/module status;
+3. generation of XHTTP / RAW / Hysteria2 / combined profiles and Host hints;
+4. viewing/copying generated profiles;
+5. XHTTP signature management;
+6. REALITY SNI status;
+7. SelfSteal site management;
+8. RKN Watcher safe scanner guard management.
 
-Этот инструмент поставляется "как есть", без каких-либо гарантий. Используя его, вы берете на себя полную ответственность за соответствие локальному законодательству в сфере связи.
+The nested July menu is adapted by NEXT. Its `0` entry is shown as **“Назад в REMNANODE NEXT”**, not as a shell/session exit.
 
-Ознакомьтесь с файлом [SECURITY.md](SECURITY.md) перед началом эксплуатации для изучения модели угроз и правил безопасности.
+## Safety model
 
----
+NEXT intentionally keeps the July dataplane and adds deterministic post-processing rather than replacing the public 443 architecture.
 
-## 📄 Лицензия
-Данный проект распространяется под лицензией MIT. Подробности смотрите в файле [LICENSE](LICENSE).
+Key guards include:
+
+- immutable July source + checksum;
+- immutable runtime module commit + per-module checksums;
+- process-lifetime APP_DIR lock to prevent concurrent mutating NEXT runs;
+- generated profile validation with Xray/rw-core before atomic install;
+- Hysteria cert-bind recovery only for local `.transport = hysteria|combined`;
+- RKN update lease, sanity checks and last-good recovery;
+- SelfSteal fail-closed publication and guarded webroot cleanup;
+- no automatic host-nginx takeover of TCP/443;
+- legacy global `remnanode` bypass removed.
+
+## CI and review
+
+Before production merge, the exact PR head passed all six production workflows:
+
+- `inbound-name-ci`
+- `selfsteal-site-ci`
+- `transport-profile-ci`
+- `rkn-safe-ci`
+- `runtime-guards-ci`
+- `round4-regressions-ci`
+
+All six also passed again on the exact merge commit on `custom`.
+
+An independent external review of the pre-final-hardening checkpoint returned **MERGE: YES** with no BLOCKER/HIGH findings. The subsequent hardening delta and accepted residuals are documented in `REVIEW_CLAUDE.md` and the final live acceptance is documented in `CANARY_ACCEPTANCE_2026-09-09.md`.
+
+## Live validation note
+
+The old-node installation/upgrade canary is complete and passed, including real client traffic. The earlier USA2 STREAM page/audio test was completed before the final salted public-path delta. The salted final STREAM implementation is covered by checksum/size/path CI, but a separate post-delta USA2 browser playback was not independently re-run from the GitHub automation environment; this is intentionally recorded rather than claimed as performed.
+
+## Requirements
+
+- Ubuntu or Debian
+- root privileges for installation/management
+- Docker / Docker Compose (installed by the July base when required)
+- a Remnawave node certificate/secret for initial node registration
+- node domain and panel IPv4 for normal installation
+- DNS/HTTP validation prerequisites when using Certbot Standalone
+
+## Files of interest
+
+- `setup_node_next.sh` — production wrapper / CLI
+- `setup_node.sh` — historical July implementation retained as immutable internal base; not the normal production entrypoint
+- `production/remnawave-transport-manager.sh`
+- `production/xhttp-signature-manager.sh`
+- `production/rkn-watcher-manager.sh`
+- `production/selfsteal-site-manager.sh`
+- `production/network-tuning-manager.sh`
+- `production/next-runtime-guards.sh`
+- `production/modules.sha256`
+- `CANARY_ACCEPTANCE_2026-09-09.md`
+- `REVIEW_CLAUDE.md`
+- `REVIEW_CHECKLIST.md`
+
+## License
+
+See `LICENSE.txt`.
