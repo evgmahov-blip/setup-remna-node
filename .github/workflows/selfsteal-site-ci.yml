@@ -29,6 +29,7 @@ jobs:
           grep -q '^TEMPLATES_REF="[0-9a-f]\{40\}"$' production/selfsteal-site-manager.sh
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
           grep -q '/data/streams.json' production/selfsteal-site-manager.sh
+          grep -q 'stream_has_legacy_external_dependency' production/selfsteal-site-manager.sh
           grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
           if grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh); then
             echo 'Unexpected runtime SelfSteal patch path' >&2; exit 1
@@ -53,20 +54,20 @@ jobs:
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
           test "$(sudo cat "$T/.selfsteal_site")" = "$STATE"
 
-      - name: STREAM is self-contained and per-node unique
+      - name: STREAM is self-contained, allows local 2rdp domain and is per-node unique
         run: |
           set -euo pipefail
           T1="$(mktemp -d)"; T2="$(mktemp -d)"
           mkdir -p "$T1/www" "$T2/www"
-          printf 'node1.example.com\n' > "$T1/.node_domain"
+          printf 'usa2.remna.2rdp.ru\n' > "$T1/.node_domain"
           printf 'node2.example.com\n' > "$T2/.node_domain"
           sudo env APP_DIR="$T1" WWW_DIR="$T1/www" bash production/selfsteal-site-manager.sh stream
           sudo env APP_DIR="$T2" WWW_DIR="$T2/www" bash production/selfsteal-site-manager.sh stream
-          if sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T1/www"; then echo 'external dependency leaked on node1' >&2; exit 1; fi
-          if sudo grep -RqiE 'deepbeat|2rdp\.ru' "$T2/www"; then echo 'external dependency leaked on node2' >&2; exit 1; fi
+          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)' "$T1/www"; then echo 'legacy external dependency leaked on usa2' >&2; exit 1; fi
+          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)' "$T2/www"; then echo 'legacy external dependency leaked on node2' >&2; exit 1; fi
           sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T1/www/index.html"
           sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T1/www/index.html"
-          sudo grep -Fq 'const STREAM_ORIGIN = "https://node1.example.com";' "$T1/www/index.html"
+          sudo grep -Fq 'const STREAM_ORIGIN = "https://usa2.remna.2rdp.ru";' "$T1/www/index.html"
           sudo jq -e '(.mounts | length) >= 4 and (.mounts | length) <= 8' "$T1/www/data/streams.json"
           sudo jq -e '.history == []' "$T1/www/data/history.json"
           if sudo find "$T1/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
