@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-1ecdbc5bce2a7338fd78a410f784ed2a760e2785}"
+MODULE_REF="${REMNANODE_REPO_REF:-9f079a38fdc819765eec6c906ffc5a72a443c9ea}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
@@ -20,7 +20,7 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
-  [production/selfsteal-site-manager.sh]="4ddb6d20dc50844745f229fb0bd422c9b0585c491ed368fa8249cbbeea7e21c6"
+  [production/selfsteal-site-manager.sh]="1b26c3df60304145db67d69bb8e80e94a2a53ba1115495d6e6683615a665f790"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
   [production/next-runtime-guards.sh]="b7e63f45eb8ce8ec87cf7c49089f9e69553bc23309fdd9a60fa85c28f0499328"
