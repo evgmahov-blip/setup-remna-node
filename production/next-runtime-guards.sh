@@ -53,7 +53,7 @@ if needle not in s:
 s=s.replace(needle, insert, 1)
 
 pattern=r'''write_safe_update_script\(\)\{\n.*?\n\}\n\nwrite_systemd_units\(\)\{'''
-replacement='''write_safe_update_script(){\n  cat > "$SAFE_UPDATE_SCRIPT" <<EOF_UPDATE_SCRIPT\n#!/usr/bin/env bash\nset -Eeuo pipefail\nGUARD="$GUARD_SCRIPT"\nLAST_GOOD="$RKN_SAFE_DIR/last-good-tspu.ipset"\nTMP_GOOD="\\${LAST_GOOD}.tmp"\n\nrestore_last_good(){\n  "\\$GUARD" remove >/dev/null 2>&1 || true\n  if [[ -s "\\$LAST_GOOD" ]]; then\n    if ipset list TSPUIPS >/dev/null 2>&1; then ipset flush TSPUIPS >/dev/null 2>&1 || true; fi\n    if ipset restore -exist < "\\$LAST_GOOD"; then\n      "\\$GUARD" apply\n      logger -t remna-rkn 'SAFE update rejected; restored last-good TSPUIPS' || true\n      return 0\n    fi\n  fi\n  logger -t remna-rkn 'SAFE update rejected; no usable last-good TSPUIPS, guard left removed' || true\n  return 1\n}\n\ncat > "$SETTINGS_FILE" <<'EOF_SETTINGS'\nFILTER_PORTS="443"\nLOG_RST="n"\nAUTO_UPDATE="n"\nENABLE_TSPUBLOCK="n"\nENABLE_GOVIPS="n"\nEOF_SETTINGS\n/opt/rkn-watcher/config_tool.py set-enabled false >/dev/null 2>&1 || true\n\nif "\\$GUARD" validate >/dev/null 2>&1; then\n  rm -f "\\$TMP_GOOD"\n  if ipset save TSPUIPS > "\\$TMP_GOOD"; then chmod 600 "\\$TMP_GOOD"; mv -f "\\$TMP_GOOD" "\\$LAST_GOOD"; else rm -f "\\$TMP_GOOD"; fi\nfi\n\n"\\$GUARD" remove >/dev/null 2>&1 || true\nif ! /usr/local/bin/rkn-watcher update --quiet; then\n  echo '[ERROR] RKN list update failed; restoring last-good set' >&2\n  restore_last_good || true\n  exit 1\nfi\nif ! "\\$GUARD" validate; then\n  echo '[ERROR] Новый TSPUIPS не прошёл sanity-check; restoring last-good set' >&2\n  restore_last_good || true\n  exit 1\nfi\n"\\$GUARD" apply\nlogger -t remna-rkn 'SAFE scanner list update OK' || true\nEOF_UPDATE_SCRIPT\n  chmod 0755 "$SAFE_UPDATE_SCRIPT"\n}\n\nwrite_systemd_units(){'''
+replacement='''write_safe_update_script(){\n  cat > "$SAFE_UPDATE_SCRIPT" <<EOF_UPDATE_SCRIPT\n#!/usr/bin/env bash\nset -Eeuo pipefail\nGUARD="$GUARD_SCRIPT"\nLAST_GOOD="$RKN_SAFE_DIR/last-good-tspu.ipset"\nTMP_GOOD="\\${LAST_GOOD}.tmp"\nUPDATE_LOCK="$RKN_SAFE_DIR/.safe-update-running"\ntrap 'rm -f "\\$UPDATE_LOCK"' EXIT\ntouch "\\$UPDATE_LOCK"\n\nrestore_last_good(){\n  "\\$GUARD" remove >/dev/null 2>&1 || true\n  if [[ -s "\\$LAST_GOOD" ]]; then\n    if ipset list TSPUIPS >/dev/null 2>&1; then ipset flush TSPUIPS >/dev/null 2>&1 || true; fi\n    if ipset restore -exist < "\\$LAST_GOOD"; then\n      "\\$GUARD" apply\n      logger -t remna-rkn 'SAFE update rejected; restored last-good TSPUIPS' || true\n      return 0\n    fi\n  fi\n  rm -f "$RKN_SAFE_DIR/.scanner-guard-active"\n  logger -t remna-rkn 'SAFE update rejected; no usable last-good TSPUIPS, guard disabled until manual recovery' || true\n  return 1\n}\n\ncat > "$SETTINGS_FILE" <<'EOF_SETTINGS'\nFILTER_PORTS="443"\nLOG_RST="n"\nAUTO_UPDATE="n"\nENABLE_TSPUBLOCK="n"\nENABLE_GOVIPS="n"\nEOF_SETTINGS\n/opt/rkn-watcher/config_tool.py set-enabled false >/dev/null 2>&1 || true\n\nif "\\$GUARD" validate >/dev/null 2>&1; then\n  rm -f "\\$TMP_GOOD"\n  if ipset save TSPUIPS > "\\$TMP_GOOD"; then chmod 600 "\\$TMP_GOOD"; mv -f "\\$TMP_GOOD" "\\$LAST_GOOD"; else rm -f "\\$TMP_GOOD"; fi\nfi\n\n"\\$GUARD" remove >/dev/null 2>&1 || true\nif ! /usr/local/bin/rkn-watcher update --quiet; then\n  echo '[ERROR] RKN list update failed; restoring last-good set' >&2\n  restore_last_good || true\n  exit 1\nfi\nif ! "\\$GUARD" validate; then\n  echo '[ERROR] Новый TSPUIPS не прошёл sanity-check; restoring last-good set' >&2\n  restore_last_good || true\n  exit 1\nfi\n"\\$GUARD" apply\nlogger -t remna-rkn 'SAFE scanner list update OK' || true\nEOF_UPDATE_SCRIPT\n  chmod 0755 "$SAFE_UPDATE_SCRIPT"\n}\n\nwrite_systemd_units(){'''
 s2,n=re.subn(pattern,replacement,s,flags=re.S)
 if n != 1:
     raise SystemExit(f'RKN patch safe-update replacement count={n}')
@@ -70,64 +70,35 @@ PY
   bash -n "$target" || { fail 'patched RKN manager не прошёл bash -n'; return 1; }
   grep -Fq 'validate_scanner_set' "$target" || { fail 'RKN sanity patch не применён'; return 1; }
   grep -Fq 'last-good-tspu.ipset' "$target" || { fail 'RKN rollback patch не применён'; return 1; }
-  log '[OK] RKN manager усилен sanity-check + last-good rollback'
+  grep -Fq '.safe-update-running' "$target" || { fail 'RKN update-lock patch не применён'; return 1; }
+  log '[OK] RKN manager усилен sanity-check + last-good rollback + update lock'
 }
 
 patch_selfsteal_manager(){
   local target="$1"
   [[ -s "$target" ]] || { fail "SelfSteal manager не найден: $target"; return 1; }
-  need_python
-  python3 - "$target" <<'PY'
-from pathlib import Path
-import sys
-p=Path(sys.argv[1]); s=p.read_text()
-old='STREAM_HEALTH_URL="https://stream.deepbeat.ru:8443/health"'
-new='STREAM_HEALTH_URL="${STREAM_HEALTH_URL:-}"'
-if old not in s: raise SystemExit('SelfSteal health marker not found')
-s=s.replace(old,new,1)
-old='''restart_nginx(){\n  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnawave-nginx; then\n    docker restart remnawave-nginx >/dev/null\n    log '[OK] remnawave-nginx перезапущен'\n  fi\n}\n'''
-new='''restart_nginx(){\n  # Static files are bind-mounted; restart would briefly remove the REALITY SelfSteal socket.\n  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnawave-nginx; then\n    log '[OK] Статические файлы обновлены без рестарта remnawave-nginx'\n  fi\n}\n'''
-if old not in s: raise SystemExit('SelfSteal restart marker not found')
-s=s.replace(old,new,1)
-old='''  sed -i "s#const HEALTH_API = \\\"/api/deepbeat-health\\\";#const HEALTH_API = \\\"${STREAM_HEALTH_URL}\\\";#" "$tmpdir/index.html"\n  grep -Fq "const HEALTH_API = \\\"${STREAM_HEALTH_URL}\\\";" "$tmpdir/index.html" || { rm -rf -- "$tmpdir"; fail 'Не удалось настроить STREAM health endpoint'; return 1; }\n'''
-new='''  if [[ -n "$STREAM_HEALTH_URL" ]]; then\n    sed -i "s#const HEALTH_API = \\\"/api/deepbeat-health\\\";#const HEALTH_API = \\\"${STREAM_HEALTH_URL}\\\";#" "$tmpdir/index.html"\n    grep -Fq "const HEALTH_API = \\\"${STREAM_HEALTH_URL}\\\";" "$tmpdir/index.html" || { rm -rf -- "$tmpdir"; fail 'Не удалось настроить STREAM health endpoint'; return 1; }\n  fi\n'''
-if old not in s: raise SystemExit('SelfSteal deploy_stream marker not found')
-s=s.replace(old,new,1)
-old='''  prepare_www\n  install -m 0644 "$tmpdir/index.html" "$WWW_DIR/index.html"\n'''
-new='''  printf '\\n<!-- node-site-%s -->\\n' "$(openssl rand -hex 16)" >> "$tmpdir/index.html"\n  prepare_www\n  install -m 0644 "$tmpdir/index.html" "$WWW_DIR/index.html"\n'''
-if old not in s: raise SystemExit('SelfSteal uniqueness marker not found')
-s=s.replace(old,new,1)
-old='''  local selected='stream' template\n'''
-new='''  local selected='random' template\n'''
-if old not in s: raise SystemExit('SelfSteal default marker not found')
-s=s.replace(old,new,1)
-old='''    template:*) template="${selected#template:}"; deploy_template "$template" ;;\n    *) log "[WARN] Неизвестное сохранённое значение '$selected'; ставлю STREAM"; deploy_stream ;;\n'''
-new='''    template:*) template="${selected#template:}"; deploy_template "$template" ;;\n    random) deploy_random_template ;;\n    *) log "[WARN] Неизвестное сохранённое значение '$selected'; ставлю RANDOM"; deploy_random_template ;;\n'''
-if old not in s: raise SystemExit('SelfSteal ensure case marker not found')
-s=s.replace(old,new,1)
-p.write_text(s)
-PY
-  bash -n "$target" || { fail 'patched SelfSteal manager не прошёл bash -n'; return 1; }
-  log '[OK] SelfSteal manager усилен: RANDOM default, без внешнего health по умолчанию, без nginx restart'
+  bash -n "$target" || { fail 'SelfSteal manager не прошёл bash -n'; return 1; }
+  grep -Fq "local selected='random' template" "$target" || { fail 'SelfSteal RANDOM default отсутствует'; return 1; }
+  grep -Fq '/data/streams.json' "$target" || { fail 'SelfSteal STREAM не self-contained'; return 1; }
+  grep -Fq '.uniquify-manifest.txt' "$target" || { fail 'SelfSteal manifest cleanup отсутствует'; return 1; }
+  log '[OK] SelfSteal module уже hardened; runtime rewrite не требуется'
 }
 
 restore_hysteria_cert_mount(){
-  local transport compose backup tmpc need_edit=0
-  transport="$(cat "$APP_DIR/.transport" 2>/dev/null || true)"
-  [[ "$transport" == hysteria || "$transport" == combined ]] || return 0
+  local compose backup='' tmpc need_edit=0
   [[ -s "$APP_DIR/remnawave-profiles/hysteria2-tls.json" ]] || return 0
   compose="$APP_DIR/docker-compose.yml"
-  [[ -f "$compose" ]] || { fail 'Hysteria2 активна, но docker-compose.yml отсутствует'; return 1; }
-  [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || { fail 'Hysteria2 активна, но сертификаты ноды отсутствуют'; return 1; }
+  [[ -f "$compose" ]] || { fail 'Hysteria2 profile существует, но docker-compose.yml отсутствует'; return 1; }
+  [[ -s "$CERTS_DIR/fullchain.pem" && -s "$CERTS_DIR/privkey.pem" ]] || { fail 'Hysteria2 profile существует, но сертификаты ноды отсутствуют'; return 1; }
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode \
      && docker exec remnanode test -s /etc/xray/certs/fullchain.pem 2>/dev/null \
      && docker exec remnanode test -s /etc/xray/certs/privkey.pem 2>/dev/null; then
     return 0
   fi
-  backup="$compose.bak.hysteria-restore.$(date +%Y%m%d-%H%M%S)"
-  cp -a "$compose" "$backup"
   if ! grep -Fq "$CERTS_DIR:/etc/xray/certs:ro" "$compose"; then
     need_edit=1
+    backup="$compose.bak.hysteria-restore.$(date +%Y%m%d-%H%M%S)"
+    cp -a "$compose" "$backup"
     tmpc="$(mktemp "$APP_DIR/.compose-hysteria-restore.XXXXXX")"
     if ! awk -v bind="$CERTS_DIR:/etc/xray/certs:ro" '
       BEGIN {in_remna=0; added=0}
@@ -139,25 +110,29 @@ restore_hysteria_cert_mount(){
       }
       END { if (!added) exit 42 }
     ' "$compose" > "$tmpc"; then
-      rm -f "$tmpc"; fail "Не удалось вернуть cert bind; compose восстановлен: $backup"; return 1
+      rm -f "$tmpc"; fail "Не удалось вернуть cert bind; backup: $backup"; return 1
     fi
     mv -f "$tmpc" "$compose"
   fi
-  log '[HYSTERIA2] Восстанавливаю cert bind и пересоздаю только remnanode'
+  log '[HYSTERIA2] Проверяю cert bind и пересоздаю только remnanode'
   if ! ( cd "$APP_DIR" && docker compose up -d remnanode ); then
-    (( need_edit )) && cp -a "$backup" "$compose"
-    fail "Не удалось пересоздать remnanode; backup: $backup"
+    if (( need_edit )); then cp -a "$backup" "$compose"; fi
+    fail "Не удалось пересоздать remnanode; backup: ${backup:-не создавался}"
     return 1
   fi
-  docker exec remnanode test -s /etc/xray/certs/fullchain.pem 2>/dev/null \
-    && docker exec remnanode test -s /etc/xray/certs/privkey.pem 2>/dev/null \
-    || { fail 'Cert bind после восстановления не виден внутри remnanode'; return 1; }
+  if ! docker exec remnanode test -s /etc/xray/certs/fullchain.pem 2>/dev/null \
+     || ! docker exec remnanode test -s /etc/xray/certs/privkey.pem 2>/dev/null; then
+    fail 'Cert bind после восстановления не виден внутри remnanode'
+    return 1
+  fi
+  if (( need_edit )); then rm -f "$backup"; fi
   log '[OK] Hysteria2 cert bind восстановлен'
 }
 
 restore_rkn_guard(){
   local guard="$APP_DIR/rkn-safe/scanner-guard.sh"
   [[ -s "$APP_DIR/rkn-safe/.scanner-guard-active" && -x "$guard" ]] || return 0
+  [[ ! -e "$APP_DIR/rkn-safe/.safe-update-running" ]] || return 0
   command -v iptables >/dev/null 2>&1 || return 0
   if iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1; then return 0; fi
   log '[RKN] Guard отсутствует (возможен ufw reload); восстанавливаю'
@@ -186,7 +161,7 @@ ConditionPathExists=$APP_DIR/rkn-safe/.scanner-guard-active
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 2
-ExecStart=/bin/sh -c 'iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || $guard apply'
+ExecStart=/bin/sh -c 'test -e $APP_DIR/rkn-safe/.safe-update-running && exit 0; iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || $guard apply'
 EOF_SERVICE
   cat > "/etc/systemd/system/$RKN_HEALTH_TIMER" <<EOF_TIMER
 [Unit]
