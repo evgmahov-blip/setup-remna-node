@@ -29,8 +29,14 @@ jobs:
           grep -q '^TEMPLATES_REF="[0-9a-f]\{40\}"$' production/selfsteal-site-manager.sh
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
           grep -q '/data/streams.json' production/selfsteal-site-manager.sh
+          grep -q 'ANNA_KARENINA_URL=' production/selfsteal-site-manager.sh
+          grep -q "--exclude 'active,listeners'" production/selfsteal-site-manager.sh
+          grep -q 'const STREAM_ORIGIN = window.location.origin;' production/selfsteal-site-manager.sh
           grep -q 'stream_has_legacy_external_dependency' production/selfsteal-site-manager.sh
           grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
+          if grep -Fq 'bookradio.hostingradio.ru' production/selfsteal-site-manager.sh; then
+            echo 'Radio Book runtime proxy must not exist in SelfSteal manager' >&2; exit 1
+          fi
           if grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh); then
             echo 'Unexpected runtime SelfSteal patch path' >&2; exit 1
           fi
@@ -54,22 +60,57 @@ jobs:
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
           test "$(sudo cat "$T/.selfsteal_site")" = "$STATE"
 
-      - name: STREAM is self-contained, allows local 2rdp domain and is per-node unique
+      - name: STREAM is six-channel local-only, runtime-safe and per-node unique
         run: |
           set -euo pipefail
           T1="$(mktemp -d)"; T2="$(mktemp -d)"
-          mkdir -p "$T1/www" "$T2/www"
+          mkdir -p "$T1/www" "$T2/www" "$T1/fixtures" "$T2/fixtures"
           printf 'usa2.remna.2rdp.ru\n' > "$T1/.node_domain"
           printf 'node2.example.com\n' > "$T2/.node_domain"
-          sudo env APP_DIR="$T1" WWW_DIR="$T1/www" bash production/selfsteal-site-manager.sh stream
-          sudo env APP_DIR="$T2" WWW_DIR="$T2/www" bash production/selfsteal-site-manager.sh stream
-          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)' "$T1/www"; then echo 'legacy external dependency leaked on usa2' >&2; exit 1; fi
-          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)' "$T2/www"; then echo 'legacy external dependency leaked on node2' >&2; exit 1; fi
+          for f in \
+            tolstoy-teachings-ch01.mp3 \
+            tolstoy-childhood-ch01.mp3 \
+            anna-karenina-ch01.mp3 \
+            beethoven-moonlight.mp3 \
+            chopin-nocturne.mp3 \
+            bach-air.mp3; do
+            dd if=/dev/zero of="$T1/fixtures/$f" bs=4096 count=1 status=none
+            cp "$T1/fixtures/$f" "$T2/fixtures/$f"
+          done
+          sudo env APP_DIR="$T1" WWW_DIR="$T1/www" \
+            STREAM_AUDIO_FIXTURE_DIR="$T1/fixtures" STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/selfsteal-site-manager.sh stream
+          sudo env APP_DIR="$T2" WWW_DIR="$T2/www" \
+            STREAM_AUDIO_FIXTURE_DIR="$T2/fixtures" STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/selfsteal-site-manager.sh stream
+          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T1/www"; then
+            echo 'runtime external dependency leaked on usa2' >&2; exit 1
+          fi
+          if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T2/www"; then
+            echo 'runtime external dependency leaked on node2' >&2; exit 1
+          fi
           sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T1/www/index.html"
           sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T1/www/index.html"
-          sudo grep -Fq 'const STREAM_ORIGIN = "https://usa2.remna.2rdp.ru";' "$T1/www/index.html"
-          sudo jq -e '(.mounts | length) >= 4 and (.mounts | length) <= 8' "$T1/www/data/streams.json"
+          sudo grep -Fq 'const STREAM_ORIGIN = window.location.origin;' "$T1/www/index.html"
+          sudo grep -Fq 'state.sort === "listeners"' "$T1/www/index.html"
+          sudo python3 - "$T1/www/index.html" <<'PY'
+          from pathlib import Path
+          import re, sys
+          s=Path(sys.argv[1]).read_text(encoding='utf-8')
+          assert re.search(r'\$\{\s*active\s*\?', s, re.S)
+          assert not re.search(r'\$\{\s*u[0-9a-f]{6,16}\s*\?', s, re.S)
+          PY
+          sudo jq -e '(.mounts | length) == 6 and ([.mounts | keys[] | startswith("/audio/")] | all) and ([.mounts[].listener_count] | all(. == 0))' "$T1/www/data/streams.json"
           sudo jq -e '.history == []' "$T1/www/data/history.json"
+          for f in \
+            tolstoy-teachings-ch01.mp3 \
+            tolstoy-childhood-ch01.mp3 \
+            anna-karenina-ch01.mp3 \
+            beethoven-moonlight.mp3 \
+            chopin-nocturne.mp3 \
+            bach-air.mp3; do
+            sudo test -s "$T1/www/audio/$f"
+          done
           if sudo find "$T1/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
           H1="$(sudo sha256sum "$T1/www/index.html" | cut -d' ' -f1)"
           H2="$(sudo sha256sum "$T2/www/index.html" | cut -d' ' -f1)"
