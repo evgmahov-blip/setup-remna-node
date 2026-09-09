@@ -170,10 +170,10 @@ jobs:
           if sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .; then
             echo 'successful Hysteria restore left its own backup behind' >&2; exit 1
           fi
-          after_success="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          after_success="$(sudo sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
           sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
             bash production/next-runtime-guards.sh restore-hysteria
-          test "$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')" = "$after_success"
+          test "$(sudo sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')" = "$after_success"
 
       - name: NEXT preflight serializes mutating runs with APP_DIR lock
         shell: bash
