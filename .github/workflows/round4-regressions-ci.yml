@@ -57,12 +57,12 @@ jobs:
           echo "$LEGACY_SHA256  $T/legacy.sh" | sha256sum -c -
           prepare_legacy_for_next "$T/legacy.sh"
           bash -n "$T/legacy.sh"
-          ! grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$T/legacy.sh"
+          if grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$T/legacy.sh"; then echo 'unsafe Telemt entry remains' >&2; exit 1; fi
           grep -Fq 'Telemt отключён в NEXT' "$T/legacy.sh"
           grep -Fq 'NEXT_ACTION_FILE' "$T/legacy.sh"
-          ! grep -q '^    register_globally$' "$T/legacy.sh"
-          ! grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"
-          ! grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"
+          if grep -q '^    register_globally$' "$T/legacy.sh"; then echo 'legacy global bypass remains' >&2; exit 1; fi
+          if grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"; then echo 'mutable template URL remains' >&2; exit 1; fi
+          if grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"; then echo 'mutable Telemt URL remains' >&2; exit 1; fi
 
       - name: BL-1 recovery runs after legacy failure and same compose
         shell: bash
@@ -91,8 +91,8 @@ jobs:
           grep -Fxq restore-rkn "$LOG"
           grep -Fxq sync-rkn "$LOG"
           grep -Fxq hysteria "$LOG"
-          ! grep -Fxq selfsteal "$LOG"
-          ! grep -Fxq rkn-default "$LOG"
+          if grep -Fxq selfsteal "$LOG"; then echo 'heavy SelfSteal ran after legacy failure' >&2; exit 1; fi
+          if grep -Fxq rkn-default "$LOG"; then echo 'heavy RKN install ran after legacy failure' >&2; exit 1; fi
 
           printf 'same\n' > "$APP_DIR/docker-compose.yml"
           : > "$LOG"
@@ -100,8 +100,8 @@ jobs:
           grep -Fxq restore-rkn "$LOG"
           grep -Fxq sync-rkn "$LOG"
           grep -Fxq hysteria "$LOG"
-          ! grep -Fxq selfsteal "$LOG"
-          ! grep -Fxq rkn-default "$LOG"
+          if grep -Fxq selfsteal "$LOG"; then echo 'SelfSteal ran on same-compose no-op' >&2; exit 1; fi
+          if grep -Fxq rkn-default "$LOG"; then echo 'RKN install ran on same-compose no-op' >&2; exit 1; fi
 
       - name: Failed uninstall cleans RKN and never self-heals
         shell: bash
@@ -132,7 +132,7 @@ jobs:
           : > "$LOG"
           if run_legacy; then echo 'failed uninstall unexpectedly returned success' >&2; exit 1; fi
           grep -Fxq cleanup "$LOG"
-          ! grep -qE 'restore-rkn|sync-rkn|hysteria|selfsteal|rkn-default' "$LOG"
+          if grep -qE 'restore-rkn|sync-rkn|hysteria|selfsteal|rkn-default' "$LOG"; then echo 'self-heal ran after uninstall request' >&2; exit 1; fi
 
       - name: H-1 stale RKN update lock self-heals while fresh lock waits
         shell: bash
@@ -158,7 +158,7 @@ jobs:
           touch -d '40 minutes ago' "$T/app/rkn-safe/.safe-update-running"
           sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
             bash production/next-runtime-guards.sh restore-rkn
-          ! test -e "$T/app/rkn-safe/.safe-update-running"
+          test ! -e "$T/app/rkn-safe/.safe-update-running"
           grep -Fxq apply "$T/guard.log"
 
           : > "$T/guard.log"
@@ -195,4 +195,4 @@ jobs:
           after="$(sha256sum "$WWW_DIR/index.html" | awk '{print $1}')"
           test "$before" = "$after"
           grep -Fxq 'KNOWN-GOOD' "$WWW_DIR/index.html"
-          ! test -e "$APP_DIR/.selfsteal_site"
+          test ! -e "$APP_DIR/.selfsteal_site"
