@@ -135,6 +135,11 @@ stream_origin(){
   esac
 }
 
+stream_has_legacy_external_dependency(){
+  local path="$1"
+  grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)' "$path"
+}
+
 deploy_stream(){
   local tmpdir brand origin src uq
   tmpdir="$(mktemp -d)"
@@ -149,8 +154,8 @@ deploy_stream(){
   sed -i 's#const HISTORY_API = "/api/deepbeat-history";#const HISTORY_API = "/data/history.json";#' "$src/index.html"
   sed -i "s#const STREAM_ORIGIN = \"https://stream.deepbeat.ru:8443\";#const STREAM_ORIGIN = \"${origin}\";#" "$src/index.html"
   sed -i "s/mstream/${brand}/g" "$src/index.html"
-  if grep -Eqi '(2rdp\.ru|deepbeat)' "$src/index.html"; then
-    rm -rf -- "$tmpdir"; fail 'В STREAM осталась внешняя зависимость'; return 1
+  if stream_has_legacy_external_dependency "$src"; then
+    rm -rf -- "$tmpdir"; fail 'В STREAM осталась legacy внешняя зависимость'; return 1
   fi
   grep -Fq 'const HEALTH_API = "/data/streams.json";' "$src/index.html" || { rm -rf -- "$tmpdir"; fail 'Не удалось перевести STREAM на локальный каталог'; return 1; }
   grep -Fq 'const HISTORY_API = "/data/history.json";' "$src/index.html" || { rm -rf -- "$tmpdir"; fail 'Не удалось перевести STREAM history на локальный каталог'; return 1; }
@@ -165,8 +170,8 @@ deploy_stream(){
   fi
   find "$uq" -mindepth 1 \( -name '.uniquify-manifest.txt' -o -name 'README.md' -o -name 'README.MD' \) -delete
   [[ -s "$uq/index.html" ]] || { rm -rf -- "$tmpdir"; fail 'STREAM: пустой index.html после сборки'; return 1; }
-  if grep -RqiE 'deepbeat|2rdp\.ru' "$uq"; then
-    rm -rf -- "$tmpdir"; fail 'STREAM после уникализации содержит внешнюю зависимость'; return 1
+  if stream_has_legacy_external_dependency "$uq"; then
+    rm -rf -- "$tmpdir"; fail 'STREAM после уникализации содержит legacy внешнюю зависимость'; return 1
   fi
   prepare_www
   cp -a "$uq"/. "$WWW_DIR"/
