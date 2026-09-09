@@ -5,7 +5,7 @@ on:
     branches:
       - fix/xhttp-raw-hysteria-from-july7
     paths:
-      - tools/finalize_canary_fixes.py
+      - tools/finalize_canary_fixes_v2.py
       - .github/workflows/finalize-canary-fixes.yml
 
 permissions:
@@ -20,4 +20,4 @@ jobs:
           ref: fix/xhttp-raw-hysteria-from-july7
           fetch-depth: 0
       - name: Finalize live-canary fixes
-        run: python3 tools/finalize_canary_fixes.py
+        run: python3 tools/finalize_canary_fixes_v2.py
