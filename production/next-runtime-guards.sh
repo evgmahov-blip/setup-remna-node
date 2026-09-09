@@ -84,12 +84,18 @@ patch_selfsteal_manager(){
   [[ -s "$target" ]] || { fail "SelfSteal manager не найден: $target"; return 1; }
   bash -n "$target" || { fail 'SelfSteal manager не прошёл bash -n'; return 1; }
   grep -Fq "local selected='random' template" "$target" || { fail 'SelfSteal RANDOM default отсутствует'; return 1; }
-  grep -Fq '/data/streams.json' "$target" || { fail 'SelfSteal STREAM не self-contained'; return 1; }
+  grep -Fq '.selfsteal_stream_salt' "$target" || { fail 'SelfSteal STREAM per-node salt отсутствует'; return 1; }
+  grep -Fq 'STREAM_AUDIO_SHA256' "$target" || { fail 'SelfSteal STREAM audio checksum pins отсутствуют'; return 1; }
+  grep -Fq -- '--max-filesize "$STREAM_AUDIO_MAX_BYTES"' "$target" || { fail 'SelfSteal STREAM download size cap отсутствует'; return 1; }
   grep -Fq '.uniquify-manifest.txt' "$target" || { fail 'SelfSteal manifest cleanup отсутствует'; return 1; }
   log '[OK] SelfSteal module уже hardened; runtime rewrite не требуется'
 }
 
 restore_hysteria_cert_mount(){
+  case "$(cat "$APP_DIR/.transport" 2>/dev/null || true)" in
+    hysteria|combined) ;;
+    *) return 0 ;;
+  esac
   local compose backup='' tmpc need_edit=0
   [[ -s "$APP_DIR/remnawave-profiles/hysteria2-tls.json" ]] || return 0
   compose="$APP_DIR/docker-compose.yml"
