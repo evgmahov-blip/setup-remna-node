@@ -57,11 +57,24 @@ jobs:
           grep -Fq 'systemd-run --quiet --unit="$ROLLBACK_UNIT" --on-active=120s' "$f"
           grep -Fq 'RandomizedDelaySec=1800' "$f"
           grep -Fq 'rkn-watcher-update.timer rkn-watcher-boot.service' "$f"
+          grep -Fq 'SAFE_UPDATE_SCRIPT=' "$f"
+          grep -Fq 'restore_scanner_set' "$f"
 
           if grep -Eq 'iptables[[:space:]]+-F[[:space:]]+INPUT|iptables[[:space:]]+-P[[:space:]]+INPUT|ufw.*reset' "$f"; then
             echo 'Unsafe global firewall reset/policy change found'
             exit 1
           fi
+
+      - name: Confirmation defaults and cleanup regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=production/rkn-watcher-manager.sh
+          grep -Fq 'Оставить защиту постоянно? [Y/n]:' "$f"
+          grep -Fq 'answer="${answer:-y}"' "$f"
+          grep -Fq 'y|yes)' "$f"
+          ! grep -Fq "trap 'rm -rf \"\$tmp\"' RETURN" "$f"
+          grep -Fq 'rm -rf "$tmp"' "$f"
 
       - name: Generated guard syntax
         shell: bash
@@ -81,4 +94,5 @@ jobs:
           set -euo pipefail
           grep -Fq 'run_rkn_default' setup_node_next.sh
           grep -Fq 'bash "$f" install-safe' setup_node_next.sh
+          grep -Fq 'rkn_guard_active' setup_node_next.sh
           grep -Fq "status_badge 'RKN scanner guard'" setup_node_next.sh
