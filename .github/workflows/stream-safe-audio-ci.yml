@@ -1,0 +1,138 @@
+name: stream-safe-audio-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+      - custom
+    paths:
+      - production/stream-safe-audio-manager.sh
+      - selfsteal/stream/index.html
+      - .github/workflows/stream-safe-audio-ci.yml
+  pull_request:
+    branches:
+      - custom
+    paths:
+      - production/stream-safe-audio-manager.sh
+      - selfsteal/stream/index.html
+      - .github/workflows/stream-safe-audio-ci.yml
+
+jobs:
+  validate-safe-audio:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and security invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n production/stream-safe-audio-manager.sh
+          if grep -qi 'deepbeat' production/stream-safe-audio-manager.sh; then
+            echo 'DeepBeat dependency is forbidden in safe-audio manager' >&2
+            exit 1
+          fi
+          grep -Fq 'proxy_ssl_verify on;' production/stream-safe-audio-manager.sh
+          grep -Fq 'proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;' production/stream-safe-audio-manager.sh
+          grep -Fq 'https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01.mp3' production/stream-safe-audio-manager.sh
+          grep -Fq 'https://archive.org/download/adventures_holmes/adventureholmes_01_doyle.mp3' production/stream-safe-audio-manager.sh
+          grep -Fq 'Moonlight_Sonata.ogg.mp3?download=' production/stream-safe-audio-manager.sh
+          grep -Fq 'Chopin_Nocturne_No._2_in_E_Flat_Major' production/stream-safe-audio-manager.sh
+          grep -Fq 'Air_%28Bach%29.ogg.mp3?download=' production/stream-safe-audio-manager.sh
+
+      - name: Build six-channel same-origin catalog from local fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/app" "$T/www" "$T/fixtures" "$T/cache"
+          cp selfsteal/stream/index.html "$T/www/index.html"
+          printf 'usa2.remna.2rdp.ru\n' > "$T/app/.node_domain"
+
+          for f in \
+            alice-wonderland-ch01.mp3 \
+            sherlock-scandal-in-bohemia.mp3 \
+            beethoven-moonlight.mp3 \
+            chopin-nocturne.mp3 \
+            bach-air.mp3; do
+            dd if=/dev/zero of="$T/fixtures/$f" bs=4096 count=1 status=none
+          done
+
+          sudo env \
+            APP_DIR="$T/app" \
+            WWW_DIR="$T/www" \
+            CACHE_DIR="$T/cache" \
+            SOURCE_MANIFEST="$T/app/sources.txt" \
+            STREAM_AUDIO_FIXTURE_DIR="$T/fixtures" \
+            STREAM_SKIP_NGINX_PROXY=1 \
+            STREAM_AUDIO_MIN_BYTES=1 \
+            STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/stream-safe-audio-manager.sh install
+
+          sudo jq -e '
+            (.mounts | length) == 6
+            and (.mounts["/radio-book"].stream_url == "/audio/radio-book")
+            and (.mounts["/alice-wonderland"].stream_url == "/audio/alice-wonderland-ch01.mp3")
+            and (.mounts["/sherlock-holmes"].stream_url == "/audio/sherlock-scandal-in-bohemia.mp3")
+            and (.mounts["/beethoven-moonlight"].stream_url == "/audio/beethoven-moonlight.mp3")
+            and (.mounts["/chopin-nocturne"].stream_url == "/audio/chopin-nocturne.mp3")
+            and (.mounts["/bach-air"].stream_url == "/audio/bach-air.mp3")
+            and ([.mounts[].stream_url | startswith("/audio/")] | all)
+            and ([.mounts[].stream_url | contains("://") | not] | all)
+            and ([.mounts[].listener_count] | all(. == 0))
+          ' "$T/www/data/streams.json"
+
+          sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T/www/index.html"
+          sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T/www/index.html"
+          sudo grep -Fq 'const STREAM_ORIGIN = window.location.origin;' "$T/www/index.html"
+          sudo grep -Fq 'information.stream_url' "$T/www/index.html"
+          sudo grep -Fq 'state.sort === "listeners"' "$T/www/index.html"
+          sudo grep -Eq '\$\{[[:space:]]*active[[:space:]]*\?' "$T/www/index.html"
+
+          if sudo grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T/www/index.html" "$T/www/data/streams.json"; then
+            echo 'Browser-visible files leaked an external origin' >&2
+            exit 1
+          fi
+
+          for f in \
+            alice-wonderland-ch01.mp3 \
+            sherlock-scandal-in-bohemia.mp3 \
+            beethoven-moonlight.mp3 \
+            chopin-nocturne.mp3 \
+            bach-air.mp3; do
+            sudo test -s "$T/www/audio/$f"
+          done
+
+          sudo env \
+            APP_DIR="$T/app" \
+            WWW_DIR="$T/www" \
+            CACHE_DIR="$T/cache" \
+            SOURCE_MANIFEST="$T/app/sources.txt" \
+            STREAM_SKIP_NGINX_PROXY=1 \
+            STREAM_AUDIO_MIN_BYTES=1 \
+            STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/stream-safe-audio-manager.sh status
+
+      - name: Known uniquify collision is repaired fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/app" "$T/www" "$T/fixtures" "$T/cache"
+          cp selfsteal/stream/index.html "$T/www/index.html"
+          printf 'usa2.remna.2rdp.ru\n' > "$T/app/.node_domain"
+          sed -i -E 's/\$\{[[:space:]]*active[[:space:]]*\?/\${ u1234abcd ?/' "$T/www/index.html"
+          sed -i 's/state.sort === "listeners"/state.sort === "u87654321"/' "$T/www/index.html"
+          for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do
+            printf 'fake-audio-%s\n' "$f" > "$T/fixtures/$f"
+          done
+          sudo env APP_DIR="$T/app" WWW_DIR="$T/www" CACHE_DIR="$T/cache" \
+            STREAM_AUDIO_FIXTURE_DIR="$T/fixtures" STREAM_SKIP_NGINX_PROXY=1 \
+            STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/stream-safe-audio-manager.sh install
+          sudo grep -Eq '\$\{[[:space:]]*active[[:space:]]*\?' "$T/www/index.html"
+          sudo grep -Fq 'state.sort === "listeners"' "$T/www/index.html"
+          if sudo grep -Eq '\$\{[[:space:]]*u[0-9a-f]{6,16}[[:space:]]*\?' "$T/www/index.html"; then
+            echo 'Mutated JS runtime token survived repair' >&2
+            exit 1
+          fi
