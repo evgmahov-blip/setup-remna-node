@@ -50,6 +50,14 @@ restart_nginx(){
 }
 set_state(){ printf '%s\n' "$1" > "$STATE_FILE"; chmod 600 "$STATE_FILE"; }
 
+template_allowed(){
+  local wanted="$1" item
+  for item in "${TEMPLATES[@]}"; do
+    [[ "$item" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
 finish_site(){
   local selected="$1"
   set_state "$selected"
@@ -96,7 +104,7 @@ deploy_radio(){
 
 deploy_template(){
   local template="$1" tmpdir zip root out
-  case " ${TEMPLATES[*]} " in *" $template "*) ;; *) fail "Неизвестный шаблон: $template"; return 1 ;; esac
+  template_allowed "$template" || { fail "Неизвестный шаблон: $template"; return 1; }
   command -v unzip >/dev/null 2>&1 || { fail 'Для старых шаблонов нужен пакет unzip'; return 1; }
   tmpdir="$(mktemp -d)"; zip="$tmpdir/templates.zip"; out="$tmpdir/out"
   fetch_static "$TEMPLATES_ARCHIVE" "$zip" || { rm -rf -- "$tmpdir"; return 1; }
