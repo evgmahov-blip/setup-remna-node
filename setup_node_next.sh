@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-1d699a3a5322e3e5ae6bf07853ae200613cec05f}"
+MODULE_REF="${REMNANODE_REPO_REF:-33f617e200b104bd65dcdc18d041fa63b9ed25d1}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 REPO="evgmahov-blip/setup-remna-node"
 MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
@@ -14,7 +14,7 @@ LEGACY_SHA256="aa79bc94916d41770b18dbad2ca0890123fc64cd5ce397841ca9f92e05dc67bf"
 declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
-  [production/rkn-watcher-manager.sh]="a1a0be918af606048d025459b811de17e64970c70acbba0c8f4841aa053c3444"
+  [production/rkn-watcher-manager.sh]="983d814c8cff05afaf39fd14a06575e8bd7fbb4a5633ef471f70e6a1506f17bf"
   [production/selfsteal-site-manager.sh]="1dcf365170dceda921106c32bf9498658c284d24261d3f1eea04e92f633da3c2"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="25ebe8434d96b5b55d248ec709e275913d9a227518b978b8bd0be7f3e0784af9"
@@ -109,6 +109,18 @@ run_selfsteal_site(){
   APP_DIR="$APP_DIR" bash "$f" choose
 }
 
+run_rkn_default(){
+  local f="$WORK_DIR/rkn-watcher-manager.sh"
+  if [[ -x "$APP_DIR/rkn-safe/scanner-guard.sh" ]]; then
+    echo -e "${GREEN}[RKN]${NC} SAFE scanner guard уже установлен; повторную установку пропускаю."
+    return 0
+  fi
+  fetch_module "production/rkn-watcher-manager.sh" "$f" || return 1
+  echo -e "${GREEN}[RKN]${NC} Ставлю SAFE scanner protection по умолчанию."
+  echo -e "${GRAY}      Блокируются только известные TSPU/Skipa scanner IP на tcp/80,tcp/443,udp/443.${NC}"
+  APP_DIR="$APP_DIR" bash "$f" install-safe
+}
+
 prepare_legacy_for_next(){
   local f="$1" tmp="${f}.next"
   rm -f "$tmp"
@@ -184,6 +196,9 @@ run_legacy(){
       echo -e "${GREEN}[SELFSTEAL]${NC} Применяю сохранённый сайт; если выбор ещё не делали — STREAM."
       run_selfsteal_default
     fi
+    if ! run_rkn_default; then
+      echo -e "${YELLOW}[ПРЕДУПРЕЖДЕНИЕ]${NC} Нода установлена, но SAFE scanner protection не удалось активировать."
+    fi
   else
     rc=$?
     return "$rc"
@@ -234,7 +249,7 @@ run_xhttp_signature(){
 run_rkn(){
   local f="$WORK_DIR/rkn-watcher-manager.sh"
   fetch_module "production/rkn-watcher-manager.sh" "$f" || return 1
-  APP_DIR="$APP_DIR" bash "$f"
+  APP_DIR="$APP_DIR" bash "$f" menu
 }
 
 show_sni(){
@@ -298,14 +313,16 @@ show_status(){
   echo -e "${WHITE}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo
 
-  local node=0 nginx=0 rkn=0
+  local node=0 nginx=0 rkn=0 scanner_guard=0
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnanode && node=1 || true
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx remnawave-nginx && nginx=1 || true
   [[ -x /usr/local/bin/rkn-watcher || -x /opt/rkn-watcher/rkn-watcher.sh ]] && rkn=1 || true
+  iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 && scanner_guard=1 || true
 
   printf '  '; status_badge 'Remnawave node' "$node"; echo
   printf '  '; status_badge 'SelfSteal nginx' "$nginx"; echo
   printf '  '; status_badge 'RKN Watcher' "$rkn"; echo
+  printf '  '; status_badge 'RKN scanner guard' "$scanner_guard"; echo
 
   echo
   printf '  %-22s %s\n' 'Stable base:' "$LEGACY_COMMIT"
@@ -347,7 +364,7 @@ menu(){
     echo -e "      ${GRAY}Смена SNI — только вручную внутри пункта 3, без автопереключений.${NC}"
     echo
     echo -e "${YELLOW}  [SECURITY]${NC}"
-    echo -e "   ${WHITE}8)${NC} 🛡️  RKN Watcher — установка / статус / apply / удаление"
+    echo -e "   ${WHITE}8)${NC} 🛡️  RKN Watcher — SAFE scanner guard / status / advanced"
     echo
     echo -e "${BLUE}  [СТАРЫЕ ПРОВЕРЕННЫЕ ФУНКЦИИ]${NC}"
     echo -e "      ${GRAY}SSL, Telemt, Xray version, UFW, IPv6, логи, тесты — пункт 1.${NC}"
