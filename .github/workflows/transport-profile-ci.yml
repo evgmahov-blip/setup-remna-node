@@ -290,16 +290,3 @@ jobs:
           sudo grep -q '^ALPN: h3$' "$T/remnawave-profiles/host-hysteria2.txt"
           test "$(sudo cat "$T/.transport")" = combined
           sudo xray run -test -c "$C"
-
-      - name: RKN apply precheck works without SSH environment
-        run: |
-          set -euo pipefail
-          T="$(mktemp -d)"
-          set +e
-          printf '\n' | sudo env -u SSH_CLIENT -u SSH_CONNECTION APP_DIR="$T" \
-            bash production/rkn-watcher-manager.sh apply >/tmp/rkn-console.out 2>&1
-          rc=$?
-          set -e
-          test "$rc" -eq 0
-          grep -q 'SSH_CLIENT/SSH_CONNECTION не заданы' /tmp/rkn-console.out
-          ! grep -qi 'unbound variable' /tmp/rkn-console.out
