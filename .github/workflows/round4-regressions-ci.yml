@@ -32,7 +32,7 @@ jobs:
           sha256sum -c production/modules.sha256
           module_ref="$(sed -n 's/^MODULE_REF="${REMNANODE_REPO_REF:-\([0-9a-f]\{40\}\)}"$/\1/p' setup_node_next.sh)"
           test "${#module_ref}" -eq 40
-          test "$module_ref" = '52a25219dd2e9efd985d0daa439ae9c98da1e1c0'
+          test "$module_ref" = '31cd59665b90fa631caf837dc473b5bdb249aeeb'
 
       - name: RKN patched manager has exact attested SHA
         shell: bash
@@ -44,7 +44,7 @@ jobs:
           got="$(sha256sum "$T/rkn.sh" | awk '{print $1}')"
           test "$got" = 'a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244'
 
-      - name: Adapted July disables unsafe Telemt and marks uninstall
+      - name: Adapted July disables unsafe Telemt and marks uninstall only after confirmation
         shell: bash
         run: |
           set -euo pipefail
@@ -60,9 +60,22 @@ jobs:
           if grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$T/legacy.sh"; then echo 'unsafe Telemt entry remains' >&2; exit 1; fi
           grep -Fq 'Telemt отключён в NEXT' "$T/legacy.sh"
           grep -Fq 'NEXT_ACTION_FILE' "$T/legacy.sh"
+          grep -Fq '6) uninstall_and_rollback ;;' "$T/legacy.sh"
           if grep -q '^    register_globally$' "$T/legacy.sh"; then echo 'legacy global bypass remains' >&2; exit 1; fi
           if grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"; then echo 'mutable template URL remains' >&2; exit 1; fi
           if grep -q 'setup-remna-node/custom/vendor/telemt-install' "$T/legacy.sh"; then echo 'mutable Telemt URL remains' >&2; exit 1; fi
+          python3 - "$T/legacy.sh" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          assert s.count('NEXT_ACTION_FILE') == 1
+          confirm=s.index('read -p "Вы уверены, что хотите продолжить? (y/N): " confirm')
+          marker=s.index('NEXT_ACTION_FILE')
+          stop=s.index('log "${INFO} Остановка контейнеров Docker..."')
+          assert confirm < marker < stop, (confirm, marker, stop)
+          case=s.index('6) uninstall_and_rollback ;;')
+          assert case != marker
+          PY
 
       - name: BL-1 recovery runs after legacy failure and same compose
         shell: bash
@@ -103,7 +116,7 @@ jobs:
           if grep -Fxq selfsteal "$LOG"; then echo 'SelfSteal ran on same-compose no-op' >&2; exit 1; fi
           if grep -Fxq rkn-default "$LOG"; then echo 'RKN install ran on same-compose no-op' >&2; exit 1; fi
 
-      - name: Failed uninstall cleans RKN and never self-heals
+      - name: Cancelled uninstall never triggers cleanup
         shell: bash
         run: |
           set -euo pipefail
@@ -112,7 +125,35 @@ jobs:
           source "$T/setup-lib.sh"
           APP_DIR="$T/app"; WORK_DIR="$T/work"; mkdir -p "$APP_DIR" "$WORK_DIR"
           LOG="$T/log"
+          printf 'healthy\n' > "$APP_DIR/docker-compose.yml"
+          fetch_url(){ printf '#!/usr/bin/env bash\n# simulated operator cancellation: no NEXT_ACTION_FILE marker\nexit 0\n' > "$2"; chmod +x "$2"; }
+          prepare_legacy_for_next(){ :; }
+          remove_legacy_global_command(){ :; }
+          cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
+          restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
+          sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
+          restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
+          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
+          run_rkn_default(){ echo rkn-default >> "$LOG"; }
+          : > "$LOG"
+          run_legacy
+          if grep -Fxq cleanup "$LOG"; then echo 'cancelled uninstall triggered cleanup' >&2; exit 1; fi
+          grep -Fxq restore-rkn "$LOG"
+          grep -Fxq sync-rkn "$LOG"
+          grep -Fxq hysteria "$LOG"
+
+      - name: Failed uninstall cleans RKN and never self-heals
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/work"; mkdir -p "$APP_DIR/rkn-safe" "$WORK_DIR"
+          LOG="$T/log"
           printf 'existing\n' > "$APP_DIR/docker-compose.yml"
+          printf 'active\n' > "$APP_DIR/rkn-safe/.scanner-guard-active"
+          touch "$APP_DIR/rkn-safe/.safe-update-running"
           fetch_url(){ cat > "$2" <<'SH'
           #!/usr/bin/env bash
           printf 'uninstall\n' > "${NEXT_ACTION_FILE:?}"
@@ -122,7 +163,10 @@ jobs:
           chmod +x "$2"; }
           prepare_legacy_for_next(){ :; }
           remove_legacy_global_command(){ :; }
-          cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
+          cleanup_rkn_watch_after_uninstall(){
+            echo cleanup >> "$LOG"
+            rm -f "$APP_DIR/rkn-safe/.scanner-guard-active" "$APP_DIR/rkn-safe/.safe-update-running"
+          }
           restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
           sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
           restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
@@ -132,9 +176,11 @@ jobs:
           : > "$LOG"
           if run_legacy; then echo 'failed uninstall unexpectedly returned success' >&2; exit 1; fi
           grep -Fxq cleanup "$LOG"
+          test ! -e "$APP_DIR/rkn-safe/.scanner-guard-active"
+          test ! -e "$APP_DIR/rkn-safe/.safe-update-running"
           if grep -qE 'restore-rkn|sync-rkn|hysteria|selfsteal|rkn-default' "$LOG"; then echo 'self-heal ran after uninstall request' >&2; exit 1; fi
 
-      - name: H-1 stale RKN update lock self-heals while fresh lock waits
+      - name: RKN lease handles stale fresh and future timestamps
         shell: bash
         run: |
           set -euo pipefail
@@ -152,8 +198,8 @@ jobs:
           exit 0
           SH
           chmod +x "$T/app/rkn-safe/scanner-guard.sh" "$T/bin/iptables"
-          : > "$T/guard.log"
 
+          : > "$T/guard.log"
           touch "$T/app/rkn-safe/.safe-update-running"
           touch -d '40 minutes ago' "$T/app/rkn-safe/.safe-update-running"
           sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
@@ -167,6 +213,60 @@ jobs:
             bash production/next-runtime-guards.sh restore-rkn
           test -e "$T/app/rkn-safe/.safe-update-running"
           test ! -s "$T/guard.log"
+
+          : > "$T/guard.log"
+          touch -d '40 minutes' "$T/app/rkn-safe/.safe-update-running"
+          sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
+            bash production/next-runtime-guards.sh restore-rkn
+          test ! -e "$T/app/rkn-safe/.safe-update-running"
+          grep -Fxq apply "$T/guard.log"
+
+      - name: Generated systemd health script respects update lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/app/rkn-safe" "$T/bin"
+          printf 'active\n' > "$T/app/rkn-safe/.scanner-guard-active"
+          cat > "$T/app/rkn-safe/scanner-guard.sh" <<'SH'
+          #!/bin/sh
+          echo "$*" >> "${GUARD_LOG:?}"
+          SH
+          cat > "$T/bin/iptables" <<'SH'
+          #!/bin/sh
+          [ "${1:-}" = '-C' ] && exit 1
+          exit 0
+          SH
+          cat > "$T/bin/systemctl" <<'SH'
+          #!/bin/sh
+          exit 0
+          SH
+          chmod +x "$T/app/rkn-safe/scanner-guard.sh" "$T/bin/iptables" "$T/bin/systemctl"
+          : > "$T/guard.log"
+          sudo env PATH="$T/bin:$PATH" APP_DIR="$T/app" GUARD_LOG="$T/guard.log" RKN_UPDATE_LOCK_MAX_MINUTES=30 \
+            bash production/next-runtime-guards.sh sync-rkn-watch
+          sudo test -x "$T/app/rkn-safe/health-check.sh"
+          sudo /bin/sh -n "$T/app/rkn-safe/health-check.sh"
+          sudo grep -Fq "ExecStart=/bin/sh $T/app/rkn-safe/health-check.sh" /etc/systemd/system/remnanode-rkn-scanner-health.service
+
+          sudo touch "$T/app/rkn-safe/.safe-update-running"
+          : > "$T/guard.log"
+          sudo env PATH="$T/bin:$PATH" GUARD_LOG="$T/guard.log" /bin/sh "$T/app/rkn-safe/health-check.sh"
+          test ! -s "$T/guard.log"
+
+          sudo touch -d '40 minutes ago' "$T/app/rkn-safe/.safe-update-running"
+          : > "$T/guard.log"
+          sudo env PATH="$T/bin:$PATH" GUARD_LOG="$T/guard.log" /bin/sh "$T/app/rkn-safe/health-check.sh"
+          sudo test ! -e "$T/app/rkn-safe/.safe-update-running"
+          grep -Fxq apply "$T/guard.log"
+
+          sudo touch "$T/app/rkn-safe/.safe-update-running"
+          sudo touch -d '40 minutes' "$T/app/rkn-safe/.safe-update-running"
+          : > "$T/guard.log"
+          sudo env PATH="$T/bin:$PATH" GUARD_LOG="$T/guard.log" /bin/sh "$T/app/rkn-safe/health-check.sh"
+          sudo test ! -e "$T/app/rkn-safe/.safe-update-running"
+          grep -Fxq apply "$T/guard.log"
+          sudo rm -f /etc/systemd/system/remnanode-rkn-scanner-health.service /etc/systemd/system/remnanode-rkn-scanner-health.timer /etc/systemd/system/remnanode-rkn-scanner-ufw.path
 
       - name: STREAM uniquify failure preserves existing webroot
         shell: bash
