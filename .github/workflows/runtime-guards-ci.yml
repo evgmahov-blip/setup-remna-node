@@ -1,0 +1,181 @@
+name: runtime-guards-ci
+
+on:
+  push:
+    branches:
+      - fix/xhttp-raw-hysteria-from-july7
+      - custom
+  pull_request:
+    branches:
+      - custom
+
+jobs:
+  production-audit-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and immutable manifest
+        run: |
+          set -euo pipefail
+          bash -n setup_node_next.sh
+          bash -n production/next-runtime-guards.sh
+          bash -n production/network-tuning-manager.sh
+          sha256sum -c production/modules.sha256
+          grep -Eq '^LEGACY_TEMPLATES_REF="[0-9a-f]{40}"$' setup_node_next.sh
+          grep -q '\[production/next-runtime-guards.sh\]' setup_node_next.sh
+
+      - name: Patch real pinned RKN and SelfSteal managers
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          cp production/rkn-watcher-manager.sh "$T/rkn.sh"
+          cp production/selfsteal-site-manager.sh "$T/selfsteal.sh"
+          sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-rkn "$T/rkn.sh"
+          sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-selfsteal "$T/selfsteal.sh"
+          bash -n "$T/rkn.sh"
+          bash -n "$T/selfsteal.sh"
+          grep -q 'validate_scanner_set' "$T/rkn.sh"
+          grep -q 'last-good-tspu.ipset' "$T/rkn.sh"
+          grep -q 'SAFE update rejected; restored last-good TSPUIPS' "$T/rkn.sh"
+          ! grep -q 'STREAM_HEALTH_URL="https://stream.deepbeat.ru:8443/health"' "$T/selfsteal.sh"
+          grep -q "local selected='random' template" "$T/selfsteal.sh"
+          ! grep -q 'docker restart remnawave-nginx' "$T/selfsteal.sh"
+
+          python3 - "$T/rkn.sh" "$T/guard.sh" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          guard=s.split("cat > \"$GUARD_SCRIPT\" <<'EOF_GUARD'\n",1)[1].split('\nEOF_GUARD',1)[0]
+          Path(sys.argv[2]).write_text(guard+'\n')
+          PY
+          bash -n "$T/guard.sh"
+
+      - name: RKN rejects dangerous scanner networks before touching iptables
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          cp production/rkn-watcher-manager.sh "$T/rkn.sh"
+          sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-rkn "$T/rkn.sh"
+          python3 - "$T/rkn.sh" "$T/guard.sh" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          guard=s.split("cat > \"$GUARD_SCRIPT\" <<'EOF_GUARD'\n",1)[1].split('\nEOF_GUARD',1)[0]
+          Path(sys.argv[2]).write_text(guard+'\n')
+          PY
+          chmod +x "$T/guard.sh"
+          mkdir -p "$T/bin"
+          cat > "$T/bin/ipset" <<'SH'
+          #!/usr/bin/env bash
+          case "${1:-}" in
+            list)
+              echo 'Name: TSPUIPS'
+              echo 'Number of entries: 1'
+              echo 'Members:'
+              [[ "${MOCK_IPSET_MODE:-wide}" == valid ]] && echo '5.6.7.0/24' || echo '0.0.0.0/0'
+              ;;
+            save)
+              echo 'create TSPUIPS hash:net family inet'
+              [[ "${MOCK_IPSET_MODE:-wide}" == valid ]] && echo 'add TSPUIPS 5.6.7.0/24' || echo 'add TSPUIPS 0.0.0.0/0'
+              ;;
+            *) exit 0 ;;
+          esac
+          SH
+          cat > "$T/bin/iptables" <<'SH'
+          #!/usr/bin/env bash
+          echo "$*" >> "${IPTABLES_LOG:?}"
+          exit 0
+          SH
+          chmod +x "$T/bin/ipset" "$T/bin/iptables"
+          : > "$T/iptables.log"
+          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" validate; then
+            echo 'Dangerous 0.0.0.0/0 unexpectedly passed validation'
+            exit 1
+          fi
+          if sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" bash "$T/guard.sh" apply; then
+            echo 'Dangerous 0.0.0.0/0 unexpectedly reached apply'
+            exit 1
+          fi
+          test ! -s "$T/iptables.log"
+          sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" MOCK_IPSET_MODE=valid bash "$T/guard.sh" validate
+
+      - name: Hysteria cert bind is restored after legacy compose regeneration
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          mkdir -p "$T/app/certs" "$T/app/remnawave-profiles" "$T/bin"
+          printf 'combined\n' > "$T/app/.transport"
+          printf '{}\n' > "$T/app/remnawave-profiles/hysteria2-tls.json"
+          printf 'cert\n' > "$T/app/certs/fullchain.pem"
+          printf 'key\n' > "$T/app/certs/privkey.pem"
+          cat > "$T/app/docker-compose.yml" <<'YAML'
+          services:
+            remnanode:
+              image: example/remnanode:latest
+              volumes:
+                - /dev/shm:/dev/shm:rw
+          YAML
+          cat > "$T/bin/docker" <<'SH'
+          #!/usr/bin/env bash
+          if [[ "${1:-}" == ps ]]; then echo remnanode; exit 0; fi
+          if [[ "${1:-}" == exec ]]; then [[ -f "${MOCK_STATE:?}" ]]; exit $?; fi
+          if [[ "${1:-}" == compose ]]; then touch "${MOCK_STATE:?}"; exit 0; fi
+          exit 0
+          SH
+          chmod +x "$T/bin/docker"
+          sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" bash production/next-runtime-guards.sh restore-hysteria
+          grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
+          test -f "$T/mounted"
+
+      - name: Legacy adaptation pins third-party template code
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          # shellcheck disable=SC1090
+          source "$T/setup-lib.sh"
+          curl -fsSL --proto '=https' "https://raw.githubusercontent.com/evgmahov-blip/setup-remna-node/${LEGACY_COMMIT}/setup_node.sh" -o "$T/legacy.sh"
+          echo "$LEGACY_SHA256  $T/legacy.sh" | sha256sum -c -
+          prepare_legacy_for_next "$T/legacy.sh"
+          bash -n "$T/legacy.sh"
+          ! grep -q 'node-templates/archive/refs/heads/main.zip' "$T/legacy.sh"
+          grep -q "node-templates/archive/${LEGACY_TEMPLATES_REF}.zip" "$T/legacy.sh"
+          grep -q "node-templates-${LEGACY_TEMPLATES_REF}" "$T/legacy.sh"
+          grep -q 'local protocol="reality"' "$T/legacy.sh"
+
+      - name: Legacy post-actions follow compose state
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          # shellcheck disable=SC1090
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/work"; mkdir -p "$APP_DIR" "$WORK_DIR"
+          LOG="$T/log"
+          fetch_url(){ printf '#!/usr/bin/env bash\n%s\n' "${FAKE_LEGACY_ACTION:-:}" > "$2"; chmod +x "$2"; }
+          prepare_legacy_for_next(){ :; }
+          cleanup_rkn_watch_after_uninstall(){ echo cleanup >> "$LOG"; }
+          restore_rkn_guard(){ echo restore-rkn >> "$LOG"; }
+          sync_rkn_watch(){ echo sync-rkn >> "$LOG"; }
+          run_selfsteal_default(){ echo selfsteal >> "$LOG"; }
+          restore_hysteria_mount(){ echo hysteria >> "$LOG"; }
+          run_rkn_default(){ echo rkn-default >> "$LOG"; }
+
+          : > "$LOG"
+          FAKE_LEGACY_ACTION='rm -f "'$APP_DIR'/docker-compose.yml"' run_legacy
+          grep -qx cleanup "$LOG"
+          ! grep -qE 'selfsteal|hysteria|rkn-default' "$LOG"
+
+          printf 'same\n' > "$APP_DIR/docker-compose.yml"
+          : > "$LOG"
+          FAKE_LEGACY_ACTION=':' run_legacy
+          grep -qx restore-rkn "$LOG"
+          grep -qx sync-rkn "$LOG"
+          ! grep -qE 'selfsteal|hysteria|rkn-default' "$LOG"
+
+          : > "$LOG"
+          FAKE_LEGACY_ACTION='printf changed\\n > "'$APP_DIR'/docker-compose.yml"' run_legacy
+          grep -qx selfsteal "$LOG"
+          grep -qx hysteria "$LOG"
+          grep -qx rkn-default "$LOG"
