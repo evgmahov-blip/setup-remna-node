@@ -6,7 +6,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 WWW_DIR="${WWW_DIR:-/var/www/html}"
 NGINX_CONF="${NGINX_CONF:-$APP_DIR/nginx.conf}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-remnawave-nginx}"
-NGINX_SOCKET="${NGINX_SOCKET:-/dev/shm/nginx.sock}"
+NGINX_CONTAINER_CONF="${NGINX_CONTAINER_CONF:-/etc/nginx/conf.d/default.conf}"
 CACHE_DIR="${CACHE_DIR:-$APP_DIR/stream-audio-cache}"
 SOURCE_MANIFEST="${SOURCE_MANIFEST:-$APP_DIR/stream-audio-sources.txt}"
 STREAM_AUDIO_FIXTURE_DIR="${STREAM_AUDIO_FIXTURE_DIR:-}"
@@ -105,7 +105,11 @@ s,n3=re.subn(r'const\s+STREAM_ORIGIN\s*=\s*[^;]+;','const STREAM_ORIGIN = window
 if not (n1 and n2 and n3): raise SystemExit("missing STREAM API/origin markers")
 if "information.stream_url" not in s:
     old='url: STREAM_ORIGIN + normalizedMount,'
-    new='''url:\n                        typeof information.stream_url === "string" &&\n                        information.stream_url.trim()\n                            ? information.stream_url.trim()\n                            : STREAM_ORIGIN + normalizedMount,'''
+    new='''url:
+                        typeof information.stream_url === "string" &&
+                        information.stream_url.trim()
+                            ? information.stream_url.trim()
+                            : STREAM_ORIGIN + normalizedMount,'''
     if old not in s: raise SystemExit("missing STREAM url marker")
     s=s.replace(old,new,1)
 rx=re.compile(r'(class="[^"]*\$\{\s*)u[0-9a-f]{6,16}(\s*\?\s*"\s+active"\s*:\s*""\s*\})',re.S)
@@ -163,28 +167,60 @@ p.write_text(s,encoding="utf-8")
 PY
 }
 
+write_nginx_conf_in_place(){
+  local src="$1" dst="$2" before after want got
+  [[ -s "$src" && -f "$dst" ]] || { fail 'Не найден source/destination для in-place nginx write'; return 1; }
+  before="$(stat -Lc '%d:%i' "$dst" 2>/dev/null || true)"
+  want="$(sha256sum "$src" | awk '{print $1}')"
+  [[ -n "$before" && -n "$want" ]] || { fail 'Не удалось получить inode/SHA nginx config'; return 1; }
+  if ! cat -- "$src" > "$dst"; then fail 'Не удалось записать nginx config in-place'; return 1; fi
+  after="$(stat -Lc '%d:%i' "$dst" 2>/dev/null || true)"
+  got="$(sha256sum "$dst" | awk '{print $1}')"
+  [[ "$before" == "$after" ]] || { fail "nginx config inode неожиданно изменился: $before -> $after"; return 1; }
+  [[ "$want" == "$got" ]] || { fail 'SHA nginx config после in-place write не совпал'; return 1; }
+  return 0
+}
+
+verify_nginx_bind_sync(){
+  local host_sha container_sha
+  host_sha="$(sha256sum "$NGINX_CONF" 2>/dev/null | awk '{print $1}' || true)"
+  container_sha="$(docker exec "$NGINX_CONTAINER" sha256sum "$NGINX_CONTAINER_CONF" 2>/dev/null | awk '{print $1}' || true)"
+  [[ -n "$host_sha" && -n "$container_sha" ]] || { fail 'Не удалось сравнить host/container nginx config'; return 1; }
+  if [[ "$host_sha" != "$container_sha" ]]; then
+    fail "Docker file bind-mount stale: host SHA=$host_sha container SHA=$container_sha. Нужен одноразовый recreate только remnawave-nginx."
+    return 1
+  fi
+  log "[OK] nginx bind-mount синхронен: $host_sha"
+}
+
+restore_nginx_conf(){
+  local backup="$1"
+  write_nginx_conf_in_place "$backup" "$NGINX_CONF" || return 1
+  verify_nginx_bind_sync || return 1
+  docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1 || return 1
+  docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1 || return 1
+}
+
 probe_radio_book_proxy(){
   local domain="$1" hdr body rc status ctype bytes sample
   command -v curl >/dev/null 2>&1 || { fail 'curl не найден для fail-closed Radio Book probe'; return 1; }
-  [[ -S "$NGINX_SOCKET" ]] || { fail "nginx unix socket не найден: $NGINX_SOCKET"; return 1; }
   hdr="$(mktemp)"; body="$(mktemp)"
-  if curl -sS --unix-socket "$NGINX_SOCKET" --connect-timeout 3 --max-time 6 \
-      -H "Host: $domain" -D "$hdr" -o "$body" 'http://localhost/audio/radio-book'; then
-    rc=0
-  else
-    rc=$?
-  fi
+  set +e
+  curl -ksS --http1.1 --connect-timeout 5 --max-time 6 \
+      -D "$hdr" -o "$body" "https://${domain}/audio/radio-book"
+  rc=$?
+  set -e
   status="$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}' "$hdr" 2>/dev/null || true)"
   ctype="$(awk -F': *' 'tolower($1)=="content-type" {v=$2} END{gsub(/\r/,"",v); print tolower(v)}' "$hdr" 2>/dev/null || true)"
   bytes="$(wc -c < "$body" 2>/dev/null || printf '0')"
-  if [[ "$status" == 200 && "$ctype" == audio/* && "$bytes" =~ ^[0-9]+$ ]] && (( bytes >= 1024 )); then
+  if [[ "$status" == 200 && "$ctype" == audio/* && "$bytes" =~ ^[0-9]+$ ]] && (( bytes >= 1024 )) && [[ "$rc" == 0 || "$rc" == 28 ]]; then
     rm -f -- "$hdr" "$body"
-    log "[OK] Radio Book proxy probe: HTTP $status, $ctype, ${bytes} bytes через $NGINX_SOCKET"
+    log "[OK] Radio Book end-to-end probe: HTTP $status, $ctype, ${bytes} bytes через https://${domain}/audio/radio-book"
     return 0
   fi
   sample="$(head -c 256 "$body" 2>/dev/null | tr '\r\n' '  ' | tr -cd '[:print:] ' || true)"
   rm -f -- "$hdr" "$body"
-  fail "Radio Book proxy probe FAIL: curl_rc=$rc http=${status:-none} type=${ctype:-none} bytes=${bytes:-0} body=${sample:-empty}"
+  fail "Radio Book end-to-end probe FAIL: curl_rc=$rc http=${status:-none} type=${ctype:-none} bytes=${bytes:-0} body=${sample:-empty}"
   return 1
 }
 
@@ -214,14 +250,21 @@ managed=f'''{indent}{begin}\n{indent}location = /audio/radio-book {{\n{inner}pro
 pos=target.start()+loc.start(); s=s[:pos]+managed+s[pos:]; p.write_text(s,encoding="utf-8")
 PY
   then rm -f -- "$tmp"; fail 'Не удалось безопасно вставить Radio Book proxy в доменный server block'; return 1; fi
-  mv -f -- "$tmp" "$NGINX_CONF"
-  if ! docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1; then cp -a -- "$backup" "$NGINX_CONF"; docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1 || true; fail "nginx -t не прошёл; восстановлен backup $backup"; return 1; fi
-  if ! docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1; then cp -a -- "$backup" "$NGINX_CONF"; docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1 || true; fail "nginx reload не прошёл; восстановлен backup $backup"; return 1; fi
+
+  if ! write_nginx_conf_in_place "$tmp" "$NGINX_CONF"; then rm -f -- "$tmp"; return 1; fi
+  rm -f -- "$tmp"
+
+  if ! verify_nginx_bind_sync; then
+    write_nginx_conf_in_place "$backup" "$NGINX_CONF" >/dev/null 2>&1 || true
+    fail 'nginx bind-mount уже рассинхронизирован старой inode-replace версией; автоматический restart/recreate намеренно не выполняю'
+    return 1
+  fi
+  if ! docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1; then restore_nginx_conf "$backup" >/dev/null 2>&1 || true; fail "nginx -t не прошёл; восстановлен backup $backup"; return 1; fi
+  if ! docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1; then restore_nginx_conf "$backup" >/dev/null 2>&1 || true; fail "nginx reload не прошёл; восстановлен backup $backup"; return 1; fi
+  if ! docker exec "$NGINX_CONTAINER" nginx -T 2>/dev/null | grep -Fq "$MARK_BEGIN"; then restore_nginx_conf "$backup" >/dev/null 2>&1 || true; fail 'Активный nginx после reload не содержит managed Radio Book location'; return 1; fi
   if ! probe_radio_book_proxy "$domain"; then
-    cp -a -- "$backup" "$NGINX_CONF"
-    docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1 || true
-    docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1 || true
-    fail "Radio Book proxy не прошёл live-probe; восстановлен backup $backup"
+    restore_nginx_conf "$backup" >/dev/null 2>&1 || true
+    fail "Radio Book proxy не прошёл end-to-end probe; восстановлен backup $backup"
     return 1
   fi
   log '[OK] Radio Book: same-origin reverse proxy /audio/radio-book, upstream TLS verify=ON, Host включает :8069, client headers stripped'
@@ -293,12 +336,28 @@ install_safe_audio(){
 }
 
 status_safe_audio(){
-  local bad=0 f
+  local bad=0 f host_sha container_sha
   echo 'STREAM SAFE AUDIO STATUS'
   if [[ -s "$WWW_DIR/data/streams.json" ]] && jq -e '(.mounts|length)==6 and ([.mounts[].stream_url|startswith("/audio/")]|all) and ([.mounts[].stream_url|contains("://")|not]|all)' "$WWW_DIR/data/streams.json" >/dev/null 2>&1; then echo '[OK] streams.json: 6 same-origin channels'; else echo '[FAIL] streams.json'; bad=1; fi
   if grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$WWW_DIR/index.html" "$WWW_DIR/data/streams.json" 2>/dev/null; then echo '[FAIL] frontend/catalog содержит внешний origin'; bad=1; else echo '[OK] frontend/catalog: external origins отсутствуют'; fi
   for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if valid_audio_file "$WWW_DIR/audio/$f"; then echo "[OK] local: $f"; else echo "[FAIL] local: $f"; bad=1; fi; done
-  if [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]]; then echo '[CI] nginx proxy status skipped'; elif grep -Fq "$MARK_BEGIN" "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_ssl_verify on;' "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_pass_request_headers off;' "$NGINX_CONF" 2>/dev/null && grep -Fq "proxy_set_header Host ${RADIOBOOK_HOST}:${RADIOBOOK_PORT};" "$NGINX_CONF" 2>/dev/null; then echo '[OK] Radio Book same-origin nginx proxy configured, TLS verify=ON, Host=:8069, client headers stripped'; else echo '[FAIL] Radio Book nginx proxy missing/incomplete'; bad=1; fi
+  if [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]]; then
+    echo '[CI] nginx proxy status skipped'
+  else
+    host_sha="$(sha256sum "$NGINX_CONF" 2>/dev/null | awk '{print $1}' || true)"
+    container_sha="$(docker exec "$NGINX_CONTAINER" sha256sum "$NGINX_CONTAINER_CONF" 2>/dev/null | awk '{print $1}' || true)"
+    if [[ -n "$host_sha" && "$host_sha" == "$container_sha" ]] \
+       && grep -Fq "$MARK_BEGIN" "$NGINX_CONF" 2>/dev/null \
+       && grep -Fq 'proxy_ssl_verify on;' "$NGINX_CONF" 2>/dev/null \
+       && grep -Fq 'proxy_pass_request_headers off;' "$NGINX_CONF" 2>/dev/null \
+       && grep -Fq "proxy_set_header Host ${RADIOBOOK_HOST}:${RADIOBOOK_PORT};" "$NGINX_CONF" 2>/dev/null \
+       && docker exec "$NGINX_CONTAINER" nginx -T 2>/dev/null | grep -Fq "$MARK_BEGIN"; then
+      echo '[OK] Radio Book same-origin nginx proxy active, bind synchronized, TLS verify=ON, Host=:8069'
+    else
+      echo '[FAIL] Radio Book nginx proxy inactive/incomplete или file bind-mount stale'
+      bad=1
+    fi
+  fi
   return "$bad"
 }
 
