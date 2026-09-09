@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-bc8d41270ee43ad770403c07028706e3454e13cc}"
+MODULE_REF="${REMNANODE_REPO_REF:-5e54fd49e7b8500fe337f5df442bfa568075a147}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
@@ -19,11 +19,11 @@ LEGACY_SHA256="aa79bc94916d41770b18dbad2ca0890123fc64cd5ce397841ca9f92e05dc67bf"
 declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
-  [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
+  [production/rkn-watcher-manager.sh]="283414299df4e12e3d12b586ab71b1278968fa77c5ebf85eb61f37ee5bcf68e9"
   [production/selfsteal-site-manager.sh]="b783e94f2ef3764b2e397cba9eb96aeab88d7da11da017a2c867054f9546a84a"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
-  [production/next-runtime-guards.sh]="3f73636f38de786fdbcc590af822ad4d69b8f7b9afe6976b470174bebf53f1f1"
+  [production/next-runtime-guards.sh]="620797d0677d091d6550894e32fea58ce7f2adf2f125d6f6ccfb217a7b3382fd"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
@@ -258,6 +258,11 @@ prepare_legacy_for_next(){
   ' "$f" > "$tmp"; then
     rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Не удалось безопасно адаптировать July base"; return 1
   fi
+  # NEXT UX: this is a nested July menu, so 0 returns to NEXT rather than leaving the SSH shell.
+  sed -i \
+    -e 's/ 0) Выход/ 0) ↩️ Назад в REMNANODE NEXT/' \
+    -e 's/командой: ${CYAN}remnanode${NC}/командой: ${CYAN}remnanode-next${NC}/' \
+    "$tmp"
   if grep -Fq 'read -p "Ваш выбор [1]: " proto_choice' "$tmp" \
      || grep -Fq 'read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain' "$tmp" \
      || grep -Fq 'node-templates/archive/refs/heads/main.zip' "$tmp" \
@@ -270,6 +275,10 @@ prepare_legacy_for_next(){
   grep -Fq "setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt legacy source не закреплён"; return 1; }
   grep -Fq 'Telemt отключён в NEXT' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt safety gate не применён"; return 1; }
   grep -Fq 'NEXT_ACTION_FILE' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy uninstall marker не применён"; return 1; }
+  if grep -Fq ' 0) Выход' "$tmp"; then rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy меню всё ещё показывает Выход вместо возврата в NEXT"; return 1; fi
+  grep -Fq '0) ↩️ Назад в REMNANODE NEXT' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy пункт возврата в NEXT не применён"; return 1; }
+  if grep -Fq 'командой: ${CYAN}remnanode${NC}' "$tmp"; then rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy подсказка всё ещё рекламирует bypass-команду remnanode"; return 1; fi
+  grep -Fq 'командой: ${CYAN}remnanode-next${NC}' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Подсказка remnanode-next не применена"; return 1; }
   bash -n "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Адаптированный July base не прошёл bash -n"; return 1; }
   chmod 0755 "$tmp"; mv -f "$tmp" "$f"
   echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates; Telemt отключён из-за конфликта public 443; bypass remnanode отключён"
