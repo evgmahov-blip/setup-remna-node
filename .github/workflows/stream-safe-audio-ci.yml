@@ -39,8 +39,8 @@ jobs:
           grep -Fq 'proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_pass_request_headers off;' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_hide_header Location;' production/stream-safe-audio-manager.sh
-          grep -Fq 'https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01.mp3' production/stream-safe-audio-manager.sh
-          grep -Fq 'https://archive.org/download/adventures_holmes/adventureholmes_01_doyle.mp3' production/stream-safe-audio-manager.sh
+          grep -Fq 'https://www.archive.org/download/teachingsofchrist_1204_librivox/teachingsofchrist_1_tolstoy_64kb.mp3' production/stream-safe-audio-manager.sh
+          grep -Fq 'https://www.archive.org/download/childhood_russian_librivox/Leo-Tolstoy-Detstvo-RUSSIAN-01-Karl-Ivanych_64kb.mp3' production/stream-safe-audio-manager.sh
           grep -Fq 'Moonlight_Sonata.ogg.mp3?download=' production/stream-safe-audio-manager.sh
           grep -Fq 'Chopin_Nocturne_No._2_in_E_Flat_Major' production/stream-safe-audio-manager.sh
           grep -Fq 'Air_%28Bach%29.ogg.mp3?download=' production/stream-safe-audio-manager.sh
@@ -55,8 +55,8 @@ jobs:
           printf 'usa2.remna.2rdp.ru\n' > "$T/app/.node_domain"
 
           for f in \
-            alice-wonderland-ch01.mp3 \
-            sherlock-scandal-in-bohemia.mp3 \
+            tolstoy-teachings-ch01.mp3 \
+            tolstoy-childhood-ch01.mp3 \
             beethoven-moonlight.mp3 \
             chopin-nocturne.mp3 \
             bach-air.mp3; do
@@ -77,8 +77,8 @@ jobs:
           sudo jq -e '
             (.mounts | length) == 6
             and (.mounts["/radio-book"].stream_url == "/audio/radio-book")
-            and (.mounts["/alice-wonderland"].stream_url == "/audio/alice-wonderland-ch01.mp3")
-            and (.mounts["/sherlock-holmes"].stream_url == "/audio/sherlock-scandal-in-bohemia.mp3")
+            and (.mounts["/tolstoy-teachings"].stream_url == "/audio/tolstoy-teachings-ch01.mp3")
+            and (.mounts["/tolstoy-childhood"].stream_url == "/audio/tolstoy-childhood-ch01.mp3")
             and (.mounts["/beethoven-moonlight"].stream_url == "/audio/beethoven-moonlight.mp3")
             and (.mounts["/chopin-nocturne"].stream_url == "/audio/chopin-nocturne.mp3")
             and (.mounts["/bach-air"].stream_url == "/audio/bach-air.mp3")
@@ -109,8 +109,8 @@ jobs:
           fi
 
           for f in \
-            alice-wonderland-ch01.mp3 \
-            sherlock-scandal-in-bohemia.mp3 \
+            tolstoy-teachings-ch01.mp3 \
+            tolstoy-childhood-ch01.mp3 \
             beethoven-moonlight.mp3 \
             chopin-nocturne.mp3 \
             bach-air.mp3; do
@@ -146,7 +146,7 @@ jobs:
           p.write_text(s,encoding='utf-8')
           PY
 
-          for f in alice-wonderland-ch01.mp3 sherlock-scandal-in-bohemia.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do
+          for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do
             printf 'fake-audio-%s\n' "$f" > "$T/fixtures/$f"
           done
 
