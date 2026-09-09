@@ -41,6 +41,8 @@ jobs:
           grep -Eq '^LEGACY_TEMPLATES_REF="[0-9a-f]{40}"$' setup_node_next.sh
           grep -q '\[production/next-runtime-guards.sh\]' setup_node_next.sh
           grep -q 'minClientVer: допустим формат' setup_node_next.sh
+          grep -Fq '.remnanode-next.lock' setup_node_next.sh
+          grep -Fq 'flock -n 9' setup_node_next.sh
           if grep -q 'patch-selfsteal' <(sed -n '/prepare_selfsteal_manager(){/,/^}/p' setup_node_next.sh); then
             echo 'Unexpected runtime SelfSteal rewrite' >&2; exit 1
           fi
@@ -59,7 +61,9 @@ jobs:
           grep -q 'last-good-tspu.ipset' "$T/rkn.sh"
           grep -q '.safe-update-running' "$T/rkn.sh"
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
-          grep -q '/data/streams.json' production/selfsteal-site-manager.sh
+          grep -q '.selfsteal_stream_salt' production/selfsteal-site-manager.sh
+          grep -q 'STREAM_AUDIO_SHA256' production/selfsteal-site-manager.sh
+          grep -Fq -- '--max-filesize "$STREAM_AUDIO_MAX_BYTES"' production/selfsteal-site-manager.sh
           grep -q 'немутированный STREAM публиковать запрещено' production/selfsteal-site-manager.sh
 
       - name: RKN rejects dangerous scanner networks before touching iptables
@@ -108,13 +112,12 @@ jobs:
           test ! -s "$T/iptables.log"
           sudo env PATH="$T/bin:$PATH" IPTABLES_LOG="$T/iptables.log" MOCK_IPSET_MODE=valid bash "$T/guard.sh" validate
 
-      - name: Hysteria cert bind restore follows profile not transport marker
+      - name: Hysteria cert bind restore is gated by local transport marker
         shell: bash
         run: |
           set -euo pipefail
           T="$(mktemp -d)"
           mkdir -p "$T/app/certs" "$T/app/remnawave-profiles" "$T/bin"
-          printf 'xhttp\n' > "$T/app/.transport"
           printf '{}\n' > "$T/app/remnawave-profiles/hysteria2-tls.json"
           printf 'cert\n' > "$T/app/certs/fullchain.pem"
           printf 'key\n' > "$T/app/certs/privkey.pem"
@@ -136,7 +139,19 @@ jobs:
           exit 0
           SH
           chmod +x "$T/bin/docker"
+
+          printf 'xhttp\n' > "$T/app/.transport"
           before="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
+            bash production/next-runtime-guards.sh restore-hysteria
+          after_xhttp="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          test "$before" = "$after_xhttp"
+          test ! -e "$T/mounted"
+          if sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .; then
+            echo 'xhttp marker unexpectedly triggered Hysteria recovery' >&2; exit 1
+          fi
+
+          printf 'hysteria\n' > "$T/app/.transport"
           if sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" MOCK_FAIL_COMPOSE=1 APP_DIR="$T/app" \
             bash production/next-runtime-guards.sh restore-hysteria; then
             echo 'compose failure unexpectedly returned success' >&2; exit 1
@@ -147,6 +162,7 @@ jobs:
           test -n "$failure_backup"
           echo "[OK] failure path retained recovery backup: $failure_backup"
           sudo rm -f -- "$failure_backup"
+
           sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
             bash production/next-runtime-guards.sh restore-hysteria
           sudo grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
@@ -154,6 +170,43 @@ jobs:
           if sudo find "$T/app" -maxdepth 1 -name 'docker-compose.yml.bak.hysteria-restore.*' -print -quit | grep -q .; then
             echo 'successful Hysteria restore left its own backup behind' >&2; exit 1
           fi
+          after_success="$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')"
+          sudo env PATH="$T/bin:$PATH" MOCK_STATE="$T/mounted" APP_DIR="$T/app" \
+            bash production/next-runtime-guards.sh restore-hysteria
+          test "$(sha256sum "$T/app/docker-compose.yml" | awk '{print $1}')" = "$after_success"
+
+      - name: NEXT preflight serializes mutating runs with APP_DIR lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' setup_node_next.sh > "$T/setup-lib.sh"
+          cat > "$T/holder.sh" <<SH
+          #!/usr/bin/env bash
+          source "$T/setup-lib.sh"
+          APP_DIR="$T/app"; WORK_DIR="$T/app/next-installer"
+          remove_legacy_global_command(){ :; }
+          register_next_global_command(){ :; }
+          preflight
+          touch "$T/ready"
+          sleep 4
+          SH
+          chmod +x "$T/holder.sh"
+          bash "$T/holder.sh" &
+          holder=$!
+          for _ in $(seq 1 40); do [[ -e "$T/ready" ]] && break; sleep 0.1; done
+          test -e "$T/ready"
+          (
+            source "$T/setup-lib.sh"
+            APP_DIR="$T/app"; WORK_DIR="$T/app/next-installer"
+            remove_legacy_global_command(){ :; }
+            register_next_global_command(){ :; }
+            if preflight; then
+              echo 'second NEXT preflight unexpectedly acquired lock' >&2; exit 1
+            fi
+          )
+          wait "$holder"
+          test -e "$T/app/.remnanode-next.lock"
 
       - name: H3 NORMAL network profile never drops below July baseline
         shell: bash
