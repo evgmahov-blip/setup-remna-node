@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-/opt/remnanode}"
 WWW_DIR="${WWW_DIR:-/var/www/html}"
 NGINX_CONF="${NGINX_CONF:-$APP_DIR/nginx.conf}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-remnawave-nginx}"
+NGINX_SOCKET="${NGINX_SOCKET:-/dev/shm/nginx.sock}"
 CACHE_DIR="${CACHE_DIR:-$APP_DIR/stream-audio-cache}"
 SOURCE_MANIFEST="${SOURCE_MANIFEST:-$APP_DIR/stream-audio-sources.txt}"
 STREAM_AUDIO_FIXTURE_DIR="${STREAM_AUDIO_FIXTURE_DIR:-}"
@@ -76,7 +77,7 @@ fetch_audio(){
       "$url" -o "$part"; then
     rm -f -- "$part"; fail "Не удалось скачать audio asset: $name"; return 1
   fi
-  if ! valid_audio_file "$part"; then rm -f -- "$part"; fail "Скачанный файл не похож на допустимый audio asset: $name"; return 1; fi
+  if ! valid_audio_file "$part"; then rm -f "$part"; fail "Скачанный файл не похож на допустимый audio asset: $name"; return 1; fi
   chmod 0644 "$part"
   mv -f -- "$part" "$dst"
   log "[OK] audio asset: $name ($(file_size "$dst") bytes)"
@@ -162,6 +163,31 @@ p.write_text(s,encoding="utf-8")
 PY
 }
 
+probe_radio_book_proxy(){
+  local domain="$1" hdr body rc status ctype bytes sample
+  command -v curl >/dev/null 2>&1 || { fail 'curl не найден для fail-closed Radio Book probe'; return 1; }
+  [[ -S "$NGINX_SOCKET" ]] || { fail "nginx unix socket не найден: $NGINX_SOCKET"; return 1; }
+  hdr="$(mktemp)"; body="$(mktemp)"
+  if curl -sS --unix-socket "$NGINX_SOCKET" --connect-timeout 3 --max-time 6 \
+      -H "Host: $domain" -D "$hdr" -o "$body" 'http://localhost/audio/radio-book'; then
+    rc=0
+  else
+    rc=$?
+  fi
+  status="$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}' "$hdr" 2>/dev/null || true)"
+  ctype="$(awk -F': *' 'tolower($1)=="content-type" {v=$2} END{gsub(/\r/,"",v); print tolower(v)}' "$hdr" 2>/dev/null || true)"
+  bytes="$(wc -c < "$body" 2>/dev/null || printf '0')"
+  if [[ "$status" == 200 && "$ctype" == audio/* && "$bytes" =~ ^[0-9]+$ ]] && (( bytes >= 1024 )); then
+    rm -f -- "$hdr" "$body"
+    log "[OK] Radio Book proxy probe: HTTP $status, $ctype, ${bytes} bytes через $NGINX_SOCKET"
+    return 0
+  fi
+  sample="$(head -c 256 "$body" 2>/dev/null | tr '\r\n' '  ' | tr -cd '[:print:] ' || true)"
+  rm -f -- "$hdr" "$body"
+  fail "Radio Book proxy probe FAIL: curl_rc=$rc http=${status:-none} type=${ctype:-none} bytes=${bytes:-0} body=${sample:-empty}"
+  return 1
+}
+
 ensure_radio_book_proxy(){
   local domain backup tmp
   [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]] && { log '[CI] nginx Radio Book proxy skipped'; return 0; }
@@ -184,14 +210,21 @@ if target is None: raise SystemExit(f"domain server block not found: {domain}")
 block=target.group(0); loc=re.search(r'(?m)^([ \t]*)location\s+/\s*\{',block)
 if not loc: raise SystemExit("location / not found in domain server block")
 indent=loc.group(1); inner=indent+"    "
-managed=f'''{indent}{begin}\n{indent}location = /audio/radio-book {{\n{inner}proxy_pass https://{host}:{port}{path};\n{inner}proxy_http_version 1.1;\n{inner}proxy_pass_request_headers off;\n{inner}proxy_set_header Host {host};\n{inner}proxy_set_header Connection "";\n{inner}proxy_set_header User-Agent "Mozilla/5.0 (compatible; RemnanodeAudio/1.0)";\n{inner}proxy_set_header Referer "";\n{inner}proxy_set_header Origin "";\n{inner}proxy_set_header Cookie "";\n{inner}proxy_set_header Authorization "";\n{inner}proxy_ssl_server_name on;\n{inner}proxy_ssl_name {host};\n{inner}proxy_ssl_verify on;\n{inner}proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;\n{inner}proxy_buffering off;\n{inner}proxy_request_buffering off;\n{inner}proxy_cache off;\n{inner}proxy_hide_header Location;\n{inner}proxy_hide_header Refresh;\n{inner}proxy_hide_header Set-Cookie;\n{inner}proxy_read_timeout 1h;\n{inner}proxy_send_timeout 1h;\n{inner}add_header Cache-Control "no-store" always;\n{inner}add_header X-Content-Type-Options "nosniff" always;\n{indent}}}\n{indent}{end}\n\n'''
+managed=f'''{indent}{begin}\n{indent}location = /audio/radio-book {{\n{inner}proxy_pass https://{host}:{port}{path};\n{inner}proxy_http_version 1.1;\n{inner}proxy_pass_request_headers off;\n{inner}proxy_set_header Host {host}:{port};\n{inner}proxy_set_header Connection "";\n{inner}proxy_set_header User-Agent "Mozilla/5.0 (compatible; RemnanodeAudio/1.0)";\n{inner}proxy_set_header Referer "";\n{inner}proxy_set_header Origin "";\n{inner}proxy_set_header Cookie "";\n{inner}proxy_set_header Authorization "";\n{inner}proxy_ssl_server_name on;\n{inner}proxy_ssl_name {host};\n{inner}proxy_ssl_verify on;\n{inner}proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;\n{inner}proxy_buffering off;\n{inner}proxy_request_buffering off;\n{inner}proxy_cache off;\n{inner}proxy_hide_header Location;\n{inner}proxy_hide_header Refresh;\n{inner}proxy_hide_header Set-Cookie;\n{inner}proxy_read_timeout 1h;\n{inner}proxy_send_timeout 1h;\n{inner}add_header Cache-Control "no-store" always;\n{inner}add_header X-Content-Type-Options "nosniff" always;\n{indent}}}\n{indent}{end}\n\n'''
 pos=target.start()+loc.start(); s=s[:pos]+managed+s[pos:]; p.write_text(s,encoding="utf-8")
 PY
   then rm -f -- "$tmp"; fail 'Не удалось безопасно вставить Radio Book proxy в доменный server block'; return 1; fi
   mv -f -- "$tmp" "$NGINX_CONF"
   if ! docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1; then cp -a -- "$backup" "$NGINX_CONF"; docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1 || true; fail "nginx -t не прошёл; восстановлен backup $backup"; return 1; fi
   if ! docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1; then cp -a -- "$backup" "$NGINX_CONF"; docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1 || true; fail "nginx reload не прошёл; восстановлен backup $backup"; return 1; fi
-  log '[OK] Radio Book: same-origin reverse proxy /audio/radio-book, upstream TLS verify=ON, client headers stripped'
+  if ! probe_radio_book_proxy "$domain"; then
+    cp -a -- "$backup" "$NGINX_CONF"
+    docker exec "$NGINX_CONTAINER" nginx -t >/dev/null 2>&1 || true
+    docker exec "$NGINX_CONTAINER" nginx -s reload >/dev/null 2>&1 || true
+    fail "Radio Book proxy не прошёл live-probe; восстановлен backup $backup"
+    return 1
+  fi
+  log '[OK] Radio Book: same-origin reverse proxy /audio/radio-book, upstream TLS verify=ON, Host включает :8069, client headers stripped'
   log "[INFO] nginx backup: $backup"
 }
 
@@ -265,7 +298,7 @@ status_safe_audio(){
   if [[ -s "$WWW_DIR/data/streams.json" ]] && jq -e '(.mounts|length)==6 and ([.mounts[].stream_url|startswith("/audio/")]|all) and ([.mounts[].stream_url|contains("://")|not]|all)' "$WWW_DIR/data/streams.json" >/dev/null 2>&1; then echo '[OK] streams.json: 6 same-origin channels'; else echo '[FAIL] streams.json'; bad=1; fi
   if grep -Eqi 'deepbeat|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$WWW_DIR/index.html" "$WWW_DIR/data/streams.json" 2>/dev/null; then echo '[FAIL] frontend/catalog содержит внешний origin'; bad=1; else echo '[OK] frontend/catalog: external origins отсутствуют'; fi
   for f in tolstoy-teachings-ch01.mp3 tolstoy-childhood-ch01.mp3 beethoven-moonlight.mp3 chopin-nocturne.mp3 bach-air.mp3; do if valid_audio_file "$WWW_DIR/audio/$f"; then echo "[OK] local: $f"; else echo "[FAIL] local: $f"; bad=1; fi; done
-  if [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]]; then echo '[CI] nginx proxy status skipped'; elif grep -Fq "$MARK_BEGIN" "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_ssl_verify on;' "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_pass_request_headers off;' "$NGINX_CONF" 2>/dev/null; then echo '[OK] Radio Book same-origin nginx proxy configured, TLS verify=ON, client headers stripped'; else echo '[FAIL] Radio Book nginx proxy missing/incomplete'; bad=1; fi
+  if [[ "$STREAM_SKIP_NGINX_PROXY" == 1 ]]; then echo '[CI] nginx proxy status skipped'; elif grep -Fq "$MARK_BEGIN" "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_ssl_verify on;' "$NGINX_CONF" 2>/dev/null && grep -Fq 'proxy_pass_request_headers off;' "$NGINX_CONF" 2>/dev/null && grep -Fq "proxy_set_header Host ${RADIOBOOK_HOST}:${RADIOBOOK_PORT};" "$NGINX_CONF" 2>/dev/null; then echo '[OK] Radio Book same-origin nginx proxy configured, TLS verify=ON, Host=:8069, client headers stripped'; else echo '[FAIL] Radio Book nginx proxy missing/incomplete'; bad=1; fi
   return "$bad"
 }
 
