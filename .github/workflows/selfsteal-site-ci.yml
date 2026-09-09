@@ -28,12 +28,16 @@ jobs:
           grep -q 'Маскировочный сайт — STREAM / RADIO / старые шаблоны / RANDOM' setup_node_next.sh
           grep -q '^TEMPLATES_REF="[0-9a-f]\{40\}"$' production/selfsteal-site-manager.sh
           grep -q "local selected='random' template" production/selfsteal-site-manager.sh
-          grep -q '/data/streams.json' production/selfsteal-site-manager.sh
+          grep -q '.selfsteal_stream_salt' production/selfsteal-site-manager.sh
+          grep -q 'STREAM_AUDIO_SHA256' production/selfsteal-site-manager.sh
+          grep -Fq 'STREAM_AUDIO_MAX_BYTES="${STREAM_AUDIO_MAX_BYTES:-8388608}"' production/selfsteal-site-manager.sh
+          grep -Fq -- '--max-filesize "$STREAM_AUDIO_MAX_BYTES"' production/selfsteal-site-manager.sh
           grep -q 'ANNA_KARENINA_URL=' production/selfsteal-site-manager.sh
           grep -q -- "--exclude 'active,listeners'" production/selfsteal-site-manager.sh
           grep -q 'const STREAM_ORIGIN = window.location.origin;' production/selfsteal-site-manager.sh
           grep -q 'stream_has_legacy_external_dependency' production/selfsteal-site-manager.sh
           grep -q '.uniquify-manifest.txt' production/selfsteal-site-manager.sh
+          grep -q 'validate_www_dir' production/selfsteal-site-manager.sh
           if grep -Fq 'bookradio.hostingradio.ru' production/selfsteal-site-manager.sh; then
             echo 'Radio Book runtime proxy must not exist in SelfSteal manager' >&2; exit 1
           fi
@@ -60,7 +64,7 @@ jobs:
           sudo env APP_DIR="$T" WWW_DIR="$T/www" bash production/selfsteal-site-manager.sh ensure
           test "$(sudo cat "$T/.selfsteal_site")" = "$STATE"
 
-      - name: STREAM is six-channel local-only, runtime-safe and per-node unique
+      - name: STREAM is six-channel local-only, salted and runtime-safe
         run: |
           set -euo pipefail
           T1="$(mktemp -d)"; T2="$(mktemp -d)"
@@ -83,14 +87,21 @@ jobs:
           sudo env APP_DIR="$T2" WWW_DIR="$T2/www" \
             STREAM_AUDIO_FIXTURE_DIR="$T2/fixtures" STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
             bash production/selfsteal-site-manager.sh stream
+
+          SALT1="$(sudo cat "$T1/.selfsteal_stream_salt")"
+          SALT2="$(sudo cat "$T2/.selfsteal_stream_salt")"
+          [[ "$SALT1" =~ ^[0-9a-f]{8}$ ]]
+          [[ "$SALT2" =~ ^[0-9a-f]{8}$ ]]
+          test "$SALT1" != "$SALT2"
+
           if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T1/www"; then
             echo 'runtime external dependency leaked on usa2' >&2; exit 1
           fi
           if sudo grep -RqiE 'stream\.deepbeat\.ru|/api/deepbeat-(health|history)|bookradio\.hostingradio\.ru|archive\.org|upload\.wikimedia\.org' "$T2/www"; then
             echo 'runtime external dependency leaked on node2' >&2; exit 1
           fi
-          sudo grep -Fq 'const HEALTH_API = "/data/streams.json";' "$T1/www/index.html"
-          sudo grep -Fq 'const HISTORY_API = "/data/history.json";' "$T1/www/index.html"
+          sudo grep -Fq "const HEALTH_API = \"/data/streams-${SALT1}.json\";" "$T1/www/index.html"
+          sudo grep -Fq "const HISTORY_API = \"/data/history-${SALT1}.json\";" "$T1/www/index.html"
           sudo grep -Fq 'const STREAM_ORIGIN = window.location.origin;' "$T1/www/index.html"
           sudo grep -Fq 'state.sort === "listeners"' "$T1/www/index.html"
           sudo python3 - "$T1/www/index.html" <<'PY'
@@ -100,8 +111,10 @@ jobs:
           assert re.search(r'\$\{\s*active\s*\?', s, re.S)
           assert not re.search(r'\$\{\s*u[0-9a-f]{6,16}\s*\?', s, re.S)
           PY
-          sudo jq -e '(.mounts | length) == 6 and ([.mounts | keys[] | startswith("/audio/")] | all) and ([.mounts[].listener_count] | all(. == 0))' "$T1/www/data/streams.json"
-          sudo jq -e '.history == []' "$T1/www/data/history.json"
+          sudo jq -e '(.mounts | length) == 6 and ([.mounts | keys[] | startswith("/audio/")] | all) and ([.mounts[].listener_count] | all(. == 0))' "$T1/www/data/streams-${SALT1}.json"
+          sudo jq -e '.history == []' "$T1/www/data/history-${SALT1}.json"
+          sudo test ! -e "$T1/www/data/streams.json"
+          sudo test ! -e "$T1/www/data/history.json"
           for f in \
             tolstoy-teachings-ch01.mp3 \
             tolstoy-childhood-ch01.mp3 \
@@ -109,7 +122,7 @@ jobs:
             beethoven-moonlight.mp3 \
             chopin-nocturne.mp3 \
             bach-air.mp3; do
-            sudo test -s "$T1/www/audio/$f"
+            sudo test -s "$T1/www/audio/${f%.mp3}-${SALT1}.mp3"
           done
           if sudo find "$T1/www" -name '.uniquify-manifest.txt' -print -quit | grep -q .; then echo 'manifest leaked' >&2; exit 1; fi
           H1="$(sudo sha256sum "$T1/www/index.html" | cut -d' ' -f1)"
@@ -118,6 +131,36 @@ jobs:
           TITLE1="$(sudo sed -n 's:.*<title>\(.*\)</title>.*:\1:p' "$T1/www/index.html" | head -1)"
           TITLE2="$(sudo sed -n 's:.*<title>\(.*\)</title>.*:\1:p' "$T2/www/index.html" | head -1)"
           test -n "$TITLE1"; test -n "$TITLE2"; test "$TITLE1" != "$TITLE2"
+
+          sudo env APP_DIR="$T1" WWW_DIR="$T1/www" \
+            STREAM_AUDIO_FIXTURE_DIR="$T1/fixtures" STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=1048576 \
+            bash production/selfsteal-site-manager.sh stream
+          test "$(sudo cat "$T1/.selfsteal_stream_salt")" = "$SALT1"
+          sudo test -s "$T1/www/data/streams-${SALT1}.json"
+
+      - name: Production checksum pins fail closed and WWW guard rejects root
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^main "\$@"$/d' production/selfsteal-site-manager.sh > "$T/self-lib.sh"
+          (
+            export APP_DIR="$T/app" WWW_DIR="$T/www" STREAM_AUDIO_FIXTURE_DIR='' STREAM_AUDIO_MIN_BYTES=1 STREAM_AUDIO_MAX_BYTES=8388608
+            source "$T/self-lib.sh"
+            mkdir -p "$APP_DIR" "$WWW_DIR"
+            dd if=/dev/zero of="$T/bad.mp3" bs=4096 count=1 status=none
+            if valid_stream_audio "$T/bad.mp3" 'bach-air.mp3'; then
+              echo 'wrong production SHA unexpectedly accepted' >&2; exit 1
+            fi
+            if valid_stream_audio "$T/bad.mp3" 'unknown.mp3'; then
+              echo 'unknown logical audio name unexpectedly accepted' >&2; exit 1
+            fi
+            WWW_DIR=/
+            if validate_www_dir; then
+              echo 'WWW_DIR=/ unexpectedly accepted' >&2; exit 1
+            fi
+            WWW_DIR="$T/www"
+            validate_www_dir
+          )
 
       - name: RADIO has hidden persistent admin path
         run: |
