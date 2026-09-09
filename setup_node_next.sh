@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-MODULE_REF="${REMNANODE_REPO_REF:-9f079a38fdc819765eec6c906ffc5a72a443c9ea}"
+MODULE_REF="${REMNANODE_REPO_REF:-bc8d41270ee43ad770403c07028706e3454e13cc}"
 LEGACY_COMMIT="${REMNANODE_LEGACY_COMMIT:-34aeaa99aa1a5c21fc4f9d0c976d38607d025353}"
 LEGACY_TEMPLATES_REF="845187fbee8fff72f66d1570af436438e859e40d"
 RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
@@ -20,10 +20,10 @@ declare -A MODULE_SHA256=(
   [production/remnawave-transport-manager.sh]="441c82fb0eb3b155986d7b84bd66aa82bb1d028b8a9c49e02f1fbac326fac2e2"
   [production/xhttp-signature-manager.sh]="dbbd1110aec2e6dd32aee204b6d0174d7fe511e1b97118570cbbea553946bd4a"
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
-  [production/selfsteal-site-manager.sh]="1b26c3df60304145db67d69bb8e80e94a2a53ba1115495d6e6683615a665f790"
+  [production/selfsteal-site-manager.sh]="b783e94f2ef3764b2e397cba9eb96aeab88d7da11da017a2c867054f9546a84a"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
   [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
-  [production/next-runtime-guards.sh]="b7e63f45eb8ce8ec87cf7c49089f9e69553bc23309fdd9a60fa85c28f0499328"
+  [production/next-runtime-guards.sh]="3f73636f38de786fdbcc590af822ad4d69b8f7b9afe6976b470174bebf53f1f1"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
@@ -93,7 +93,10 @@ preflight(){
   [[ "$LEGACY_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} LEGACY_COMMIT должен быть immutable 40-символьным commit SHA"; return 1; }
   [[ "$LEGACY_TEMPLATES_REF" =~ ^[0-9a-f]{40}$ ]] || { printf '%b\n' "${RED}[ОШИБКА]${NC} LEGACY_TEMPLATES_REF должен быть immutable SHA"; return 1; }
   [[ "$RKN_UPDATE_LOCK_MAX_MINUTES" =~ ^[0-9]+$ ]] && (( RKN_UPDATE_LOCK_MAX_MINUTES >= 1 )) || { printf '%b\n' "${RED}[ОШИБКА]${NC} RKN_UPDATE_LOCK_MAX_MINUTES должен быть целым числом >= 1"; return 1; }
-  mkdir -p "$WORK_DIR"
+  mkdir -p "$WORK_DIR" "$APP_DIR"
+  command -v flock >/dev/null 2>&1 || { printf '%b\n' "${RED}[ОШИБКА]${NC} Нужен flock (util-linux)"; return 1; }
+  exec 9>"$APP_DIR/.remnanode-next.lock" || { printf '%b\n' "${RED}[ОШИБКА]${NC} Не удалось открыть lock-файл NEXT"; return 1; }
+  flock -n 9 || { printf '%b\n' "${RED}[ОШИБКА]${NC} remnanode-next уже запущен на этой ноде"; return 1; }
   remove_legacy_global_command
   register_next_global_command
 }
