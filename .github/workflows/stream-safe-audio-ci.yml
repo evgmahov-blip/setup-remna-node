@@ -28,6 +28,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n production/stream-safe-audio-manager.sh
+          echo 'SAFE_AUDIO_SHA256:'
+          sha256sum production/stream-safe-audio-manager.sh
           if grep -Fq 'stream.deepbeat.ru' production/stream-safe-audio-manager.sh \
              || grep -Fq '/api/deepbeat-' production/stream-safe-audio-manager.sh; then
             echo 'A concrete DeepBeat endpoint is forbidden in safe-audio manager' >&2
@@ -35,6 +37,8 @@ jobs:
           fi
           grep -Fq 'proxy_ssl_verify on;' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;' production/stream-safe-audio-manager.sh
+          grep -Fq 'proxy_pass_request_headers off;' production/stream-safe-audio-manager.sh
+          grep -Fq 'proxy_hide_header Location;' production/stream-safe-audio-manager.sh
           grep -Fq 'https://archive.org/download/alice_in_wonderland_librivox/wonderland_ch_01.mp3' production/stream-safe-audio-manager.sh
           grep -Fq 'https://archive.org/download/adventures_holmes/adventureholmes_01_doyle.mp3' production/stream-safe-audio-manager.sh
           grep -Fq 'Moonlight_Sonata.ogg.mp3?download=' production/stream-safe-audio-manager.sh
