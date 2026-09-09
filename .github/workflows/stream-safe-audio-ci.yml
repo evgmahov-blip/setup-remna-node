@@ -39,10 +39,20 @@ jobs:
           grep -Fq 'proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_pass_request_headers off;' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_hide_header Location;' production/stream-safe-audio-manager.sh
-          grep -Fq 'NGINX_SOCKET="${NGINX_SOCKET:-/dev/shm/nginx.sock}"' production/stream-safe-audio-manager.sh
           grep -Fq 'proxy_set_header Host {host}:{port};' production/stream-safe-audio-manager.sh
-          grep -Fq 'probe_radio_book_proxy "$domain"' production/stream-safe-audio-manager.sh
-          grep -Fq 'Radio Book proxy probe FAIL:' production/stream-safe-audio-manager.sh
+          grep -Fq 'write_nginx_conf_in_place' production/stream-safe-audio-manager.sh
+          grep -Fq 'cat -- "$src" > "$dst"' production/stream-safe-audio-manager.sh
+          grep -Fq 'Docker file bind-mount stale:' production/stream-safe-audio-manager.sh
+          grep -Fq 'https://${domain}/audio/radio-book' production/stream-safe-audio-manager.sh
+          grep -Fq 'Radio Book end-to-end probe FAIL:' production/stream-safe-audio-manager.sh
+          if grep -Fq 'mv -f -- "$tmp" "$NGINX_CONF"' production/stream-safe-audio-manager.sh; then
+            echo 'Replacing a bind-mounted nginx config inode is forbidden' >&2
+            exit 1
+          fi
+          if grep -Fq -- '--unix-socket "$NGINX_SOCKET"' production/stream-safe-audio-manager.sh; then
+            echo 'Plain HTTP unix-socket probe is forbidden for TLS+PROXY nginx socket' >&2
+            exit 1
+          fi
           grep -Fq 'https://www.archive.org/download/teachingsofchrist_1204_librivox/teachingsofchrist_1_tolstoy_64kb.mp3' production/stream-safe-audio-manager.sh
           grep -Fq 'https://www.archive.org/download/childhood_russian_librivox/Leo-Tolstoy-Detstvo-RUSSIAN-01-Karl-Ivanych_64kb.mp3' production/stream-safe-audio-manager.sh
           grep -Fq 'Moonlight_Sonata.ogg.mp3?download=' production/stream-safe-audio-manager.sh
