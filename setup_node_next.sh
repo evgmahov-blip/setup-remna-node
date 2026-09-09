@@ -11,6 +11,9 @@ MODULE_RAW="https://raw.githubusercontent.com/${REPO}/${MODULE_REF}"
 LEGACY_RAW="https://raw.githubusercontent.com/${REPO}/${LEGACY_COMMIT}"
 WORK_DIR="${WORK_DIR:-/opt/remnanode/next-installer}"
 APP_DIR="${APP_DIR:-/opt/remnanode}"
+NEXT_INSTALL_DIR="${NEXT_INSTALL_DIR:-/usr/local/lib/remnanode-next}"
+NEXT_INSTALLED_SCRIPT="$NEXT_INSTALL_DIR/setup_node_next.sh"
+NEXT_GLOBAL_COMMAND="/usr/local/bin/remnanode-next"
 LEGACY_SHA256="aa79bc94916d41770b18dbad2ca0890123fc64cd5ce397841ca9f92e05dc67bf"
 
 declare -A MODULE_SHA256=(
@@ -19,12 +22,70 @@ declare -A MODULE_SHA256=(
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
   [production/selfsteal-site-manager.sh]="633200763bf9fdad85c87368449675d855a32c52d5607abb54714640a33f8a1e"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
-  [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
+  [production/network-tuning-manager.sh]="320a21fe345e541905c1fbac326fac2e2"
   [production/next-runtime-guards.sh]="b7e63f45eb8ce8ec87cf7c49089f9e69553bc23309fdd9a60fa85c28f0499328"
 )
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; GRAY='\033[38;5;244m'; NC='\033[0m'
+
+remove_legacy_global_command(){
+  if [[ -e /usr/local/bin/remnanode || -L /usr/local/bin/remnanode ]]; then
+    rm -f /usr/local/bin/remnanode
+    echo -e "${YELLOW}[NEXT]${NC} Удалена legacy-команда /usr/local/bin/remnanode: она обходила NEXT post-processing."
+  fi
+}
+
+register_next_global_command(){
+  local src="" launcher_tmp=""
+  src="$(readlink -f -- "$0" 2>/dev/null || true)"
+  if [[ -z "$src" || ! -f "$src" ]]; then
+    echo -e "${YELLOW}[NEXT]${NC} remnanode-next не зарегистрирован: текущий NEXT запущен не из обычного файла."
+    return 0
+  fi
+  install -d -m 0755 "$NEXT_INSTALL_DIR"
+  if [[ "$src" != "$NEXT_INSTALLED_SCRIPT" ]]; then
+    install -m 0755 "$src" "$NEXT_INSTALLED_SCRIPT"
+  else
+    chmod 0755 "$NEXT_INSTALLED_SCRIPT"
+  fi
+  launcher_tmp="$(mktemp /usr/local/bin/.remnanode-next.XXXXXX)"
+  cat > "$launcher_tmp" <<EOF_LAUNCHER
+#!/usr/bin/env bash
+set -Eeuo pipefail
+bash "$NEXT_INSTALLED_SCRIPT" "\$@"
+EOF_LAUNCHER
+  chmod 0755 "$launcher_tmp"
+  mv -f "$launcher_tmp" "$NEXT_GLOBAL_COMMAND"
+  echo -e "${GREEN}[NEXT]${NC} Безопасная команда управления: ${WHITE}remnanode-next${NC}"
+}
+
+derive_node_name(){
+  local d="" label="" region="" num="" n="${REMNANODE_NODE_NAME:-}"
+  if [[ -n "$n" ]]; then
+    n="$(printf '%s' "$n" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "$n" ]] || { echo '[ОШИБКА] REMNANODE_NODE_NAME некорректен' >&2; return 1; }
+    printf '%s' "$n"
+    return 0
+  fi
+  [[ -s "$APP_DIR/.node_domain" ]] || { echo '[ОШИБКА] Не найден .node_domain для имени inbound' >&2; return 1; }
+  d="$(tr -d '[:space:]' < "$APP_DIR/.node_domain")"
+  label="${d%%.*}"
+  if [[ "$label" =~ ^([A-Za-z]+)[_-]?([0-9]+)$ ]]; then
+    region="${BASH_REMATCH[1]^^}"
+    num="${BASH_REMATCH[2]}"
+    printf '%s-node%s' "$region" "$num"
+    return 0
+  fi
+  if [[ -s "$APP_DIR/.node_name" ]]; then
+    n="$(head -n1 "$APP_DIR/.node_name" | tr -d '\r\n')"
+    n="$(printf '%s' "$n" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "$n" ]] && { printf '%s' "$n"; return 0; }
+  fi
+  label="$(printf '%s' "$label" | sed -E 's/[^A-Za-z0-9_-]+/-/g; s/^-+//; s/-+$//')"
+  [[ -n "$label" ]] || { echo '[ОШИБКА] Не удалось вычислить имя inbound из домена' >&2; return 1; }
+  printf '%s' "$label"
+}
 
 preflight(){
   if [[ ${EUID:-$(id -u)} -ne 0 ]]; then printf '%b\n' "${RED}[ОШИБКА]${NC} Запусти от root"; return 1; fi
@@ -34,6 +95,7 @@ preflight(){
   [[ "$RKN_UPDATE_LOCK_MAX_MINUTES" =~ ^[0-9]+$ ]] && (( RKN_UPDATE_LOCK_MAX_MINUTES >= 1 )) || { printf '%b\n' "${RED}[ОШИБКА]${NC} RKN_UPDATE_LOCK_MAX_MINUTES должен быть целым числом >= 1"; return 1; }
   mkdir -p "$WORK_DIR"
   remove_legacy_global_command
+  register_next_global_command
 }
 
 pause(){ echo; read -r -p 'Нажми Enter для продолжения...' _ || true; }
@@ -216,13 +278,6 @@ compose_fingerprint(){
   sha256sum "$compose" | cut -d' ' -f1
 }
 
-remove_legacy_global_command(){
-  if [[ -e /usr/local/bin/remnanode || -L /usr/local/bin/remnanode ]]; then
-    rm -f /usr/local/bin/remnanode
-    echo -e "${YELLOW}[NEXT]${NC} Удалена legacy-команда /usr/local/bin/remnanode: она обходила NEXT post-processing."
-  fi
-}
-
 cleanup_rkn_watch_after_uninstall(){
   systemctl disable --now \
     remnanode-rkn-scanner-health.timer \
@@ -307,8 +362,10 @@ run_legacy(){
 }
 
 run_transport(){
-  local f="$WORK_DIR/remnawave-transport-manager.sh" xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh" sig_ok='' minver=''
+  local f="$WORK_DIR/remnawave-transport-manager.sh" xhttp_sig="$WORK_DIR/xhttp-signature-manager.sh" sig_ok='' minver='' node_name=''
   fetch_module production/remnawave-transport-manager.sh "$f" || return 1
+  node_name="$(derive_node_name)" || return 1
+  echo -e "${GREEN}[INBOUND]${NC} Базовое имя: ${WHITE}${node_name}${NC} → ${node_name}-xHTTP / ${node_name}-RAW / ${node_name}-Hysteria2"
   echo
   echo -e "${YELLOW}[REALITY]${NC} Пустой minClientVer оставляет дефолт Xray >= 26.3.27; старые клиенты могут быть отклонены."
   read -r -p 'minClientVer (пусто = дефолт Xray): ' minver || true
@@ -316,7 +373,7 @@ run_transport(){
     echo -e "${RED}[ОШИБКА]${NC} minClientVer: допустим формат N, N.N или N.N.N"
     return 1
   fi
-  APP_DIR="$APP_DIR" XHTTP_SIGNATURE_MODE=none REALITY_MIN_CLIENT_VER="$minver" bash "$f" || return 1
+  APP_DIR="$APP_DIR" NODE_NAME="$node_name" XHTTP_SIGNATURE_MODE=none REALITY_MIN_CLIENT_VER="$minver" bash "$f" || return 1
 
   if [[ "$(cat "$APP_DIR/.transport" 2>/dev/null || true)" == xhttp ]]; then
     fetch_module production/xhttp-signature-manager.sh "$xhttp_sig" || return 1
@@ -441,9 +498,15 @@ profile_paths(){
 }
 
 print_profile_full(){
-  local transport="$1" profile host host2='' remark mtime
+  local transport="$1" profile host host2='' host_label='' host2_label='' remark mtime
   local -a first=()
-  case "$transport" in xhttp|raw|hysteria|combined) ;; *) echo -e "${RED}[ОШИБКА]${NC} Неизвестный transport: $transport"; return 1 ;; esac
+  case "$transport" in
+    xhttp) host_label='XHTTP' ;;
+    raw) host_label='RAW' ;;
+    hysteria) host_label='HYSTERIA2' ;;
+    combined) host_label='XHTTP'; host2_label='HYSTERIA2' ;;
+    *) echo -e "${RED}[ОШИБКА]${NC} Неизвестный transport: $transport"; return 1 ;;
+  esac
   mapfile -t first < <(profile_paths "$transport")
   profile="${first[0]:-}"; host="${first[1]:-}"; host2="${first[2]:-}"
   [[ -s "$profile" ]] || { echo -e "${YELLOW}[НЕТ]${NC} Профиль ещё не создан: $profile"; return 1; }
@@ -458,14 +521,31 @@ print_profile_full(){
   echo '=== ОПИСАНИЕ ХОСТА ==='
   echo "${remark:-$(basename "$profile")}" 
   echo
-  echo '=== HOST REMNAWAVE ==='
+  echo "=== HOST REMNAWAVE: $host_label ==="
   [[ -s "$host" ]] && cat "$host" || echo "Host-файл не найден: $host"
-  if [[ -n "$host2" ]]; then echo; echo '=== HOST REMNAWAVE 2 ==='; [[ -s "$host2" ]] && cat "$host2" || echo "Host-файл не найден: $host2"; fi
+  if [[ -n "$host2" ]]; then
+    echo
+    echo "=== HOST REMNAWAVE: $host2_label ==="
+    [[ -s "$host2" ]] && cat "$host2" || echo "Host-файл не найден: $host2"
+  fi
   echo
   echo '=== ПОЛНЫЙ CONFIG PROFILE — КОПИРОВАТЬ В REMNAWAVE ==='
   cat "$profile"
   echo
   echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE PROFILE COPY ####################'
+}
+
+show_all_hosts(){
+  local found=0 f
+  echo '#################### НАЧАЛО ВЫВОДА: REMNAWAVE HOSTS ####################'
+  f="$APP_DIR/remnawave-profiles/host-xhttp.txt"
+  if [[ -s "$f" ]]; then echo '=== HOST XHTTP ==='; cat "$f"; echo; found=1; fi
+  f="$APP_DIR/remnawave-profiles/host-raw.txt"
+  if [[ -s "$f" ]]; then echo '=== HOST RAW ==='; cat "$f"; echo; found=1; fi
+  f="$APP_DIR/remnawave-profiles/host-hysteria2.txt"
+  if [[ -s "$f" ]]; then echo '=== HOST HYSTERIA2 ==='; cat "$f"; echo; found=1; fi
+  (( found == 1 )) || echo '[НЕТ] Host-файлы ещё не созданы.'
+  echo '#################### КОНЕЦ ВЫВОДА: REMNAWAVE HOSTS ####################'
 }
 
 show_profiles(){
@@ -477,6 +557,7 @@ show_profiles(){
     echo -e "${CYAN}║          ПРОСМОТР И КОПИРОВАНИЕ ПРОФИЛЕЙ REMNAWAVE        ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo "Последний локально сгенерированный transport: ${active:-не задан}"
+    echo "Базовое имя inbound: $(cat "$APP_DIR/.node_name" 2>/dev/null || echo 'не задано')"
     echo 'Назначенный в Remnawave Config Profile может отличаться — проверяй панель.'
     echo
     echo ' 1) Показать ПОСЛЕДНИЙ ЛОКАЛЬНЫЙ профиль + Host полностью'
@@ -485,6 +566,7 @@ show_profiles(){
     echo ' 4) Hysteria2 + TLS'
     echo ' 5) XHTTP + Hysteria2 (combined)'
     echo ' 6) Показать список созданных файлов'
+    echo ' 7) Вывод Host: XHTTP / RAW / Hysteria2'
     echo ' 0) Назад'
     read -r -p 'Выбор [1]: ' choice || true
     case "${choice:-1}" in
@@ -501,6 +583,7 @@ show_profiles(){
       4) print_profile_full hysteria || true; pause ;;
       5) print_profile_full combined || true; pause ;;
       6) find "$APP_DIR/remnawave-profiles" -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM  %f\n' 2>/dev/null | sort; pause ;;
+      7) show_all_hosts; pause ;;
       0) return 0 ;;
       *) echo -e "${RED}[ОШИБКА]${NC} Неверный пункт"; sleep 1 ;;
     esac
@@ -532,9 +615,11 @@ show_status(){
   printf '  %-22s %s\n' 'Stable base:' "$LEGACY_COMMIT"
   printf '  %-22s %s\n' 'Module commit:' "$MODULE_REF"
   printf '  %-22s %s\n' 'Node domain:' "$(cat "$APP_DIR/.node_domain" 2>/dev/null || echo '-')"
+  printf '  %-22s %s\n' 'Inbound base name:' "$(cat "$APP_DIR/.node_name" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Local transport marker:' "$(cat "$APP_DIR/.transport" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'Reality SNI:' "$(cat "$APP_DIR/.reality_sni" 2>/dev/null || echo '-')"
   printf '  %-22s %s\n' 'SelfSteal site:' "$(cat "$APP_DIR/.selfsteal_site" 2>/dev/null || echo 'random (default)')"
+  printf '  %-22s %s\n' 'NEXT command:' "$NEXT_GLOBAL_COMMAND"
   echo; echo -e "${BLUE}[PORTS]${NC}"; ss -lntup 2>/dev/null | grep -E '(:443[[:space:]]|:2222[[:space:]]|:80[[:space:]])' || true; pause
 }
 
