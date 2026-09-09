@@ -32,7 +32,7 @@ jobs:
           sha256sum -c production/modules.sha256
           module_ref="$(sed -n 's/^MODULE_REF="${REMNANODE_REPO_REF:-\([0-9a-f]\{40\}\)}"$/\1/p' setup_node_next.sh)"
           test "${#module_ref}" -eq 40
-          test "$module_ref" = 'bc8d41270ee43ad770403c07028706e3454e13cc'
+          test "$module_ref" = '5e54fd49e7b8500fe337f5df442bfa568075a147'
 
       - name: RKN patched manager has exact attested SHA
         shell: bash
@@ -42,7 +42,7 @@ jobs:
           cp production/rkn-watcher-manager.sh "$T/rkn.sh"
           sudo env APP_DIR="$T/app" bash production/next-runtime-guards.sh patch-rkn "$T/rkn.sh"
           got="$(sha256sum "$T/rkn.sh" | awk '{print $1}')"
-          test "$got" = 'a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244'
+          test "$got" = '2d5838809881a00cac755b43606d7c929e7ba8f5786f64ebff849eb73edeb3e7'
 
       - name: Adapted July disables unsafe Telemt and marks uninstall only after confirmation
         shell: bash
