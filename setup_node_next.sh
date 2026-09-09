@@ -22,7 +22,7 @@ declare -A MODULE_SHA256=(
   [production/rkn-watcher-manager.sh]="286a1b9979811dec1f265d5c6beb8a26cb52ebced2583e93276e13879412a92a"
   [production/selfsteal-site-manager.sh]="633200763bf9fdad85c87368449675d855a32c52d5607abb54714640a33f8a1e"
   [production/validate-generated-profile.sh]="df0edf610cd11cc0d311dd59f46fe5c263c535dbfcceeb8af90d9d25d89d0bf6"
-  [production/network-tuning-manager.sh]="320a21fe345e541905c1fbac326fac2e2"
+  [production/network-tuning-manager.sh]="320a21fe345e541905c9b04c0748921f9deea0ae0111bb0a912e6cbf5a0e7eca"
   [production/next-runtime-guards.sh]="b7e63f45eb8ce8ec87cf7c49089f9e69553bc23309fdd9a60fa85c28f0499328"
 )
 
