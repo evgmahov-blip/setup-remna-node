@@ -128,6 +128,45 @@ jobs:
           sudo grep -Fq "$T/app/certs:/etc/xray/certs:ro" "$T/app/docker-compose.yml"
           sudo test -f "$T/mounted"
 
+      - name: H3 NORMAL network profile never drops below July baseline
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sed '/^case "${1:-apply}" in/,$d' production/network-tuning-manager.sh > "$T/network-lib.sh"
+          CONF="$T/99-remnanode.conf"
+          LIMITS="$T/99-remnanode-limits.conf"
+          # shellcheck disable=SC1090
+          source "$T/network-lib.sh"
+          write_config NORMAL bbr
+          getv(){ awk -F' = ' -v key="$1" '$1==key {print $2}' "$CONF"; }
+          test "$(getv net.netfilter.nf_conntrack_max)" -ge 1048576
+          test "$(getv net.core.somaxconn)" -ge 32768
+          test "$(getv net.core.netdev_max_backlog)" -ge 16384
+          test "$(getv net.core.rmem_max)" -ge 67108864
+          test "$(getv net.core.wmem_max)" -ge 67108864
+          test "$(getv net.ipv4.tcp_max_syn_backlog)" -ge 16384
+          test "$(getv fs.file-max)" -ge 2097152
+          test "$(getv fs.inotify.max_user_instances)" -ge 8192
+          test "$(getv fs.inotify.max_user_watches)" -ge 1048576
+          test "$(getv net.ipv4.conf.all.rp_filter)" -eq 2
+          test "$(getv net.ipv4.conf.default.rp_filter)" -eq 2
+
+      - name: H4 pinned template is uniquified per node and RANDOM stays default
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          cp production/selfsteal-site-manager.sh "$T/selfsteal.sh"
+          sudo env APP_DIR="$T/patch-app" bash production/next-runtime-guards.sh patch-selfsteal "$T/selfsteal.sh"
+          grep -q "local selected='random' template" "$T/selfsteal.sh"
+          grep -q 'APP_DIR="$APP_DIR" bash "$f" random' setup_node_next.sh
+          sudo env APP_DIR="$T/node-a" WWW_DIR="$T/www-a" bash "$T/selfsteal.sh" template endless-verify
+          sudo env APP_DIR="$T/node-b" WWW_DIR="$T/www-b" bash "$T/selfsteal.sh" template endless-verify
+          sudo grep -qx 'template:endless-verify' "$T/node-a/.selfsteal_site"
+          sudo grep -qx 'template:endless-verify' "$T/node-b/.selfsteal_site"
+          A="$(sudo sha256sum "$T/www-a/index.html" | awk '{print $1}')"
+          B="$(sudo sha256sum "$T/www-b/index.html" | awk '{print $1}')"
+          test "$A" != "$B"
+
       - name: Legacy adaptation pins third-party template code
         run: |
           set -euo pipefail
