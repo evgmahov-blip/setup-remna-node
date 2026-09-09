@@ -201,13 +201,13 @@ jobs:
           source "$T/setup-lib.sh"
           LOG="$T/log"; STATE="$T/ipt-state"
           : > "$LOG"; printf '1\n' > "$STATE"
-          systemctl(){ printf 'systemctl'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"
-          rm(){ printf 'rm'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"
+          systemctl(){ { printf 'systemctl'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"; return 0; }
+          rm(){ { printf 'rm'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"; return 0; }
           iptables(){
             case "$1" in
               -C) test "$(cat "$STATE")" = 1 ;;
-              -D) printf '0\n' > "$STATE"; printf 'iptables'; printf ' %s' "$@"; printf '\n' >> "$LOG"; return 0 ;;
-              -F|-X) printf 'iptables'; printf ' %s' "$@"; printf '\n' >> "$LOG"; return 0 ;;
+              -D) printf '0\n' > "$STATE"; { printf 'iptables'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"; return 0 ;;
+              -F|-X) { printf 'iptables'; printf ' %s' "$@"; printf '\n'; } >> "$LOG"; return 0 ;;
               *) return 0 ;;
             esac
           }
