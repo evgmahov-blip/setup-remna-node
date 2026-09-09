@@ -7,6 +7,7 @@ CERTS_DIR="${CERTS_DIR:-$APP_DIR/certs}"
 RKN_HEALTH_SERVICE="remnanode-rkn-scanner-health.service"
 RKN_HEALTH_TIMER="remnanode-rkn-scanner-health.timer"
 RKN_UFW_PATH="remnanode-rkn-scanner-ufw.path"
+RKN_HEALTH_SCRIPT="$APP_DIR/rkn-safe/health-check.sh"
 RKN_PATCHED_MANAGER_SHA256="a5f9f8a7a3bb8a5cce5683ee066e046bdedf754c277d99424184c39cf93ed244"
 RKN_UPDATE_LOCK_MAX_MINUTES="${RKN_UPDATE_LOCK_MAX_MINUTES:-30}"
 
@@ -134,14 +135,28 @@ restore_hysteria_cert_mount(){
 }
 
 rkn_update_lock_active(){
-  local lock="$APP_DIR/rkn-safe/.safe-update-running" stale=''
+  local lock="$APP_DIR/rkn-safe/.safe-update-running" now mtime max_age age
   [[ -e "$lock" ]] || return 1
-  stale="$(find "$lock" -mmin "+${RKN_UPDATE_LOCK_MAX_MINUTES}" -print -quit 2>/dev/null || true)"
-  if [[ -n "$stale" ]]; then
-    log "[RKN] Обнаружен протухший update lock (> ${RKN_UPDATE_LOCK_MAX_MINUTES} мин); удаляю"
-    rm -f "$lock"
+  now="$(date +%s 2>/dev/null || true)"
+  mtime="$(stat -c %Y -- "$lock" 2>/dev/null || true)"
+  if [[ ! "$now" =~ ^[0-9]+$ || ! "$mtime" =~ ^[0-9]+$ ]]; then
+    log '[RKN] Update lock не удалось достоверно датировать; считаю stale и пытаюсь удалить'
+  else
+    max_age=$(( RKN_UPDATE_LOCK_MAX_MINUTES * 60 ))
+    age=$(( now - mtime ))
+    if (( mtime <= now && age <= max_age )); then
+      return 0
+    fi
+    if (( mtime > now )); then
+      log '[RKN] Update lock имеет mtime из будущего; считаю stale'
+    else
+      log "[RKN] Обнаружен протухший update lock (> ${RKN_UPDATE_LOCK_MAX_MINUTES} мин)"
+    fi
+  fi
+  if rm -f -- "$lock"; then
     return 1
   fi
+  log '[RKN] Не удалось удалить stale update lock; self-heal откладываю во избежание гонки'
   return 0
 }
 
@@ -160,16 +175,47 @@ restore_rkn_guard(){
 
 remove_rkn_health_watch(){
   systemctl disable --now "$RKN_HEALTH_TIMER" "$RKN_UFW_PATH" >/dev/null 2>&1 || true
-  rm -f "/etc/systemd/system/$RKN_HEALTH_SERVICE" "/etc/systemd/system/$RKN_HEALTH_TIMER" "/etc/systemd/system/$RKN_UFW_PATH"
+  rm -f "/etc/systemd/system/$RKN_HEALTH_SERVICE" "/etc/systemd/system/$RKN_HEALTH_TIMER" "/etc/systemd/system/$RKN_UFW_PATH" "$RKN_HEALTH_SCRIPT"
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 sync_rkn_health_watch(){
-  local guard="$APP_DIR/rkn-safe/scanner-guard.sh"
+  local guard="$APP_DIR/rkn-safe/scanner-guard.sh" health_dir
   if [[ ! -s "$APP_DIR/rkn-safe/.scanner-guard-active" || ! -x "$guard" ]]; then
     remove_rkn_health_watch
     return 0
   fi
+  health_dir="$(dirname "$RKN_HEALTH_SCRIPT")"
+  mkdir -p "$health_dir"
+  cat > "$RKN_HEALTH_SCRIPT" <<EOF_HEALTH
+#!/bin/sh
+set -eu
+LOCK='$APP_DIR/rkn-safe/.safe-update-running'
+GUARD='$guard'
+MAX_MINUTES='$RKN_UPDATE_LOCK_MAX_MINUTES'
+
+if [ -e "\$LOCK" ]; then
+  now=\$(date +%s 2>/dev/null || printf '0')
+  mtime=\$(stat -c %Y -- "\$LOCK" 2>/dev/null || true)
+  stale=0
+  case "\$now:\$mtime" in
+    *[!0-9:]*|*:|:*) stale=1 ;;
+    *)
+      max_age=\$((MAX_MINUTES * 60))
+      if [ "\$mtime" -gt "\$now" ] || [ \$((now - mtime)) -gt "\$max_age" ]; then stale=1; fi
+      ;;
+  esac
+  if [ "\$stale" -eq 0 ]; then exit 0; fi
+  logger -t remna-rkn 'Removing stale SAFE update lock before self-heal' 2>/dev/null || true
+  if ! rm -f -- "\$LOCK"; then
+    logger -t remna-rkn 'Cannot remove stale SAFE update lock; self-heal deferred' 2>/dev/null || true
+    exit 0
+  fi
+fi
+iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || "\$GUARD" apply
+EOF_HEALTH
+  chmod 0755 "$RKN_HEALTH_SCRIPT"
+  /bin/sh -n "$RKN_HEALTH_SCRIPT"
   cat > "/etc/systemd/system/$RKN_HEALTH_SERVICE" <<EOF_SERVICE
 [Unit]
 Description=Remnanode scanner guard self-heal
@@ -180,7 +226,7 @@ ConditionPathExists=$APP_DIR/rkn-safe/.scanner-guard-active
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 2
-ExecStart=/bin/sh -c 'lock=$APP_DIR/rkn-safe/.safe-update-running; if test -e "\$lock"; then if test -n "\$(find "\$lock" -mmin +$RKN_UPDATE_LOCK_MAX_MINUTES -print -quit 2>/dev/null)"; then logger -t remna-rkn "Removing stale SAFE update lock"; rm -f "\$lock"; else exit 0; fi; fi; iptables -C INPUT -j REMNA_RKN_SCANNERS >/dev/null 2>&1 || $guard apply'
+ExecStart=/bin/sh $RKN_HEALTH_SCRIPT
 EOF_SERVICE
   cat > "/etc/systemd/system/$RKN_HEALTH_TIMER" <<EOF_TIMER
 [Unit]
