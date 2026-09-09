@@ -1,36 +1,28 @@
-# Claude review brief: RemnaNode July baseline + XHTTP / RAW / Hysteria2 / SNI / RKN Watcher
+# Final review brief: RemnaNode NEXT
 
-## Goal
+## Review target
 
-Review branch `fix/xhttp-raw-hysteria-from-july7` as a safety/architecture audit before production deployment.
+Review the current HEAD of branch:
 
-The non-negotiable requirement is to preserve the known-working July 7 architecture and add new functionality around it rather than replace its dataplane.
+`fix/xhttp-raw-hysteria-from-july7`
 
-## Stable baseline
+Base branch:
 
-Pinned baseline commit:
+`custom`
+
+Do not merge as part of this review. The goal is a final safety/architecture verdict before production merge.
+
+## Non-negotiable dataplane invariant
+
+The known-working July 7 architecture must remain intact.
+
+Pinned July baseline:
 
 `34aeaa99aa1a5c21fc4f9d0c976d38607d025353`
 
-`setup_node_next.sh` launches that exact baseline for legacy installation/management. The baseline must remain the source of truth for:
+For TCP transports, public TCP/443 belongs to Xray/rw-core, never to host nginx.
 
-- Remnawave node installation
-- Docker host networking
-- SelfSteal nginx
-- `/dev/shm/nginx.sock`
-- SSL handling
-- UFW
-- Xray version management
-- Telemt integration
-- diagnostics/logs
-
-Do not reintroduce an nginx `stream` listener in front of Xray on public TCP/443.
-
-## Required dataplane invariant
-
-For TCP transports, public TCP/443 belongs to Xray/rw-core, not nginx.
-
-Stable SelfSteal flow:
+Expected SelfSteal flow:
 
 ```text
 Internet TCP/443
@@ -38,80 +30,74 @@ Internet TCP/443
       v
 Xray/rw-core
       |
-      +-- valid VPN client -> proxy
+      +-- valid client -> proxy
       |
-      +-- REALITY SelfSteal target -> /dev/shm/nginx.sock
-                                  |
-                                  v
-                         nginx decoy website
+      +-- REALITY SelfSteal -> /dev/shm/nginx.sock
+                               |
+                               v
+                         nginx decoy site
 ```
 
-The nginx SelfSteal server in the July baseline listens on the Unix socket with PROXY protocol support.
+The July nginx Unix socket uses PROXY protocol. Do not reintroduce host nginx `stream` / `ssl_preread` in front of Xray.
 
-## New transport manager
+## Immutable runtime pins
 
-File:
+Current wrapper intentionally uses immutable module pinning.
+
+- July baseline: `34aeaa99aa1a5c21fc4f9d0c976d38607d025353`
+- Runtime module commit: `9f079a38fdc819765eec6c906ffc5a72a443c9ea`
+- Node templates: `845187fbee8fff72f66d1570af436438e859e40d`
+- STREAM source: `ec5ffa5c26e57c6f6b2060bbf6743d3921c05500`
+
+Verify `production/modules.sha256` and the hard-coded hashes in `setup_node_next.sh` agree.
+
+## Transport manager
+
+Primary manager:
 
 `production/remnawave-transport-manager.sh`
 
-It generates Remnawave Config Profile JSON + Host field hints for three alternatives:
+Supported profiles:
 
-1. VLESS + REALITY + XHTTP
-2. VLESS + REALITY + RAW
-3. Hysteria2 + TLS
+1. VLESS + REALITY + XHTTP on TCP/443
+2. VLESS + REALITY + RAW on TCP/443
+3. Hysteria2 + TLS on UDP/443
+4. XHTTP TCP/443 + Hysteria2 UDP/443 combined
 
-### REALITY camouflage modes
+Review:
 
-For XHTTP and RAW, there are two explicit modes.
+- XHTTP + REALITY schema and current Xray compatibility
+- RAW + REALITY schema
+- Hysteria2 schema, TLS certificate mount, ALPN and UDP/443 behavior
+- combined TCP/443 + UDP/443 collision safety
+- Remnawave user injection into generated inbounds
+- Host hints and generated inbound naming
+- blank/default `minClientVer` handling
+- XHTTP signature remains opt-in and does not silently alter unrelated profiles
 
-#### SelfSteal mode (default / stable architecture)
+Expected fleet naming from node domains includes examples such as:
 
-- `target`: `/dev/shm/nginx.sock`
-- `xver`: `1`
-- `serverNames`: node domain
-- client Host SNI: node domain
-- uses the existing local SelfSteal website and node certificate
+- `usa2...` -> `USA-node2-xHTTP`, `USA-node2-RAW`, `USA-node2-Hysteria2`
+- `fin2...` -> `FIN-node2-xHTTP`, `FIN-node2-RAW`, `FIN-node2-Hysteria2`
 
-This mode is intended to preserve the original architecture.
+## REALITY camouflage
 
-#### External SNI mode
+SelfSteal mode must use the local Unix socket and preserve the July architecture.
 
-- target is an external HTTPS site, for example `www.microsoft.com:443`
-- SNI comes from a validated external pool
-- `xver`: `0`
-- current working SNI is never automatically rotated
-- updating the SNI list must not alter the current SNI
+External SNI mode must not automatically rotate a currently working SNI. Refreshing candidate lists must not mutate the active profile or Remnawave panel configuration.
 
-External pool source currently used:
+Review TLS/certificate validation and failure behavior for external candidates.
 
-`https://raw.githubusercontent.com/evkir/reality-probe/main/reality_probe.py`
+## Hysteria2 recovery
 
-Please verify parsing, TLS 1.3 validation, certificate hostname validation, and failure behavior.
+Review `production/next-runtime-guards.sh` and the Hysteria certificate bind recovery path.
 
-## Hysteria2
+Requirements:
 
-Hysteria2 uses:
-
-- protocol `hysteria`
-- transport `hysteria`
-- version 2
-- TLS
-- UDP/443
-- ALPN h3
-
-The generated Hysteria masquerade embeds the current `/var/www/html/index.html` as a `string` masquerade so it does not require mounting the website directory inside rw-core.
-
-Please verify that this is valid for the current Xray-core schema and Remnawave Config Profiles.
-
-## SNI safety requirements
-
-Must hold:
-
-- no scheduled/random automatic change of a working SNI
-- no SNI change caused only by refreshing the candidate list
-- private REALITY key must never be printed in Host hints
-- REALITY public key and short ID may be shown
-- changing camouflage mode must regenerate a profile; it must not silently mutate the live Remnawave panel configuration
+- no broad Docker restart when only the cert bind needs repair
+- preserve/restore the certificate mount safely
+- rollback on failed recovery
+- do not claim the locally generated profile is necessarily the profile currently assigned in the Remnawave panel
 
 ## RKN Watcher
 
@@ -119,55 +105,87 @@ Manager:
 
 `production/rkn-watcher-manager.sh`
 
-Pinned upstream repository:
+Pinned upstream:
 
-`Balbuto/RKN-Watcher`
+`Balbuto/RKN-Watcher@558fc11a0792892927785e162359585d51972a6a`
 
-Pinned upstream commit:
+Review SAFE scanner guard behavior, allow-list logic, update lease, systemd self-heal, UFW reload recovery, uninstall cleanup and rollback behavior.
 
-`558fc11a0792892927785e162359585d51972a6a`
+Important invariant: failure or partial uninstall must never leave an active self-heal mechanism that recreates firewall state after uninstall.
 
-Requirements:
+## SelfSteal / STREAM
 
-- verify upstream SHA256SUMS before running
-- do not automatically apply firewall policy during normal node install
-- display panel IP, current SSH client IP and node control port before manual apply
-- explicit confirmation before `apply`
-- avoid locking out SSH or Remnawave control port
+Production manager:
 
-## Unified menu
+`production/selfsteal-site-manager.sh`
+
+The abandoned Radio Book reverse-proxy experiment has been removed from the branch. Production STREAM now uses only local same-origin audio files.
+
+Expected STREAM runtime:
+
+- exactly six local channels
+- three Russian LibriVox/Tolstoy audio files
+- Beethoven, Chopin and Bach local audio files
+- browser-visible paths only under `/audio/...`, `/data/streams.json`, `/data/history.json`
+- no runtime DeepBeat, Radio Book, Archive.org or Wikimedia origins exposed to the browser
+- `STREAM_ORIGIN = window.location.origin`
+- `active` and `listeners` runtime identifiers protected from `uniquify-theme`
+- failed build/uniquify/runtime validation must preserve the existing webroot
+
+### Live validation completed on USA2
+
+The final production STREAM path was installed through the normal `remnanode-next -> 7 -> 1` menu on `usa2.remna.2rdp.ru` after the Radio Book experiment was removed.
+
+Operator confirmed the final page and audio playback work correctly.
+
+Earlier live diagnostics also confirmed that the one-time stale Docker file bind issue was repaired by recreating only `remnawave-nginx`; Xray/rw-core was not restarted. That stale-bind repair is historical live state, not a required STREAM runtime mechanism.
+
+## NEXT wrapper and lifecycle safety
 
 Entrypoint:
 
 `setup_node_next.sh`
 
-It intentionally keeps the July installer separate and pinned while exposing new modules in a color-separated menu.
+Review:
 
-Please specifically review:
+- immutable fetch/checksum behavior
+- legacy July adaptation
+- no unsafe `/usr/local/bin/remnanode` bypass
+- safe local `/usr/local/bin/remnanode-next` launcher
+- cancelled uninstall behavior
+- partial/failed uninstall cleanup
+- recovery after legacy installer failure
+- no unnecessary restart/recreate of Xray/rw-core
+- quoting, temp files, traps/races and rollback paths
 
-1. Whether XHTTP + REALITY + local Unix-socket SelfSteal is valid with current Xray-core.
-2. Whether RAW + REALITY + local Unix-socket SelfSteal is valid with current Xray-core.
-3. Whether `xver: 1` is correct for the July nginx `proxy_protocol` Unix socket listener.
-4. Whether Hysteria2 schema and TLS/masquerade fields are correct.
-5. Whether generated Remnawave Config Profiles use fields compatible with current Remnawave.
-6. Whether Remnawave dynamically injecting users into `clients: []` / `users: []` works for all three inbounds.
-7. Whether the Host field hints match current Remnawave inheritance behavior.
-8. Whether any port collision exists when TCP/443 is XHTTP/RAW and UDP/443 is Hysteria2.
-9. Whether SNI candidate validation is sufficient.
-10. Any shell-safety, quoting, race, update, firewall or rollback bugs.
+Telemt remains disabled in NEXT because its historical host-nginx `stream`/`ssl_preread` deployment conflicts with Xray ownership of public TCP/443.
 
-## Important historical failure to avoid
+## Previously accepted residual risks to reassess
 
-A previous experimental branch placed nginx `ssl_preread` in front of Xray on public TCP/443 and routed REALITY by SNI to an internal Xray port. That experiment broke working client connectivity and must not be reintroduced into this branch.
+Please explicitly state whether these remain acceptable or should block merge:
 
-## Desired review output
+1. inherited July Xray release asset is versioned but does not have an additional independently pinned checksum;
+2. SelfSteal directory publication is fail-closed for build/validation failures but is not fully power-loss atomic across webroot replacement;
+3. a stale local Hysteria profile can conservatively trigger cert-bind recovery because the node cannot know which Config Profile is actually assigned in the Remnawave panel.
 
-Please provide findings grouped as:
+## CI and live evidence
 
+Before the final cleanup/docs-only commits, the production checkpoint `4659463e55e0f1b5a5e08dbf9d84711168a4ce69` passed all seven then-present workflows, including transport, inbound naming, runtime guards, RKN, round4 regressions, SelfSteal and the now-removed experimental safe-audio workflow.
+
+The current review HEAD removes the obsolete Radio Book experimental manager/workflow and updates review documentation; production STREAM functionality lives in `production/selfsteal-site-manager.sh`.
+
+Please inspect current CI status on the exact review HEAD rather than relying only on this historical checkpoint.
+
+## Desired final output
+
+Return:
+
+- `MERGE: YES` or `MERGE: NO`
 - BLOCKER
 - HIGH
 - MEDIUM
 - LOW
 - VERIFIED OK
+- remaining live checks, if any
 
-For every blocker/high issue, provide the exact file/function/JSON field and a minimal correction that preserves the July dataplane architecture.
+For every BLOCKER/HIGH finding, give the exact file/function/field and the smallest correction that preserves the July dataplane architecture.
