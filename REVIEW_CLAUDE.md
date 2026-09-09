@@ -2,7 +2,11 @@
 
 ## Review target
 
-Review the current HEAD of branch:
+Review exact commit:
+
+`d54dfbbffda30b15711529e3192410bf4a9cc6fd`
+
+Branch:
 
 `fix/xhttp-raw-hysteria-from-july7`
 
@@ -41,8 +45,6 @@ Xray/rw-core
 The July nginx Unix socket uses PROXY protocol. Do not reintroduce host nginx `stream` / `ssl_preread` in front of Xray.
 
 ## Immutable runtime pins
-
-Current wrapper intentionally uses immutable module pinning.
 
 - July baseline: `34aeaa99aa1a5c21fc4f9d0c976d38607d025353`
 - Runtime module commit: `9f079a38fdc819765eec6c906ffc5a72a443c9ea`
@@ -138,7 +140,7 @@ The final production STREAM path was installed through the normal `remnanode-nex
 
 Operator confirmed the final page and audio playback work correctly.
 
-Earlier live diagnostics also confirmed that the one-time stale Docker file bind issue was repaired by recreating only `remnawave-nginx`; Xray/rw-core was not restarted. That stale-bind repair is historical live state, not a required STREAM runtime mechanism.
+Earlier live diagnostics also confirmed that a one-time stale Docker file bind issue was repaired by recreating only `remnawave-nginx`; Xray/rw-core was not restarted. That stale-bind repair is historical live state, not a required STREAM runtime mechanism.
 
 ## NEXT wrapper and lifecycle safety
 
@@ -170,11 +172,16 @@ Please explicitly state whether these remain acceptable or should block merge:
 
 ## CI and live evidence
 
-Before the final cleanup/docs-only commits, the production checkpoint `4659463e55e0f1b5a5e08dbf9d84711168a4ce69` passed all seven then-present workflows, including transport, inbound naming, runtime guards, RKN, round4 regressions, SelfSteal and the now-removed experimental safe-audio workflow.
+Exact review commit `d54dfbbffda30b15711529e3192410bf4a9cc6fd` passed all six current workflows:
 
-The current review HEAD removes the obsolete Radio Book experimental manager/workflow and updates review documentation; production STREAM functionality lives in `production/selfsteal-site-manager.sh`.
+- `inbound-name-ci`: SUCCESS
+- `selfsteal-site-ci`: SUCCESS
+- `transport-profile-ci`: SUCCESS
+- `rkn-safe-ci`: SUCCESS
+- `runtime-guards-ci`: SUCCESS
+- `round4-regressions-ci`: SUCCESS
 
-Please inspect current CI status on the exact review HEAD rather than relying only on this historical checkpoint.
+The former experimental `stream-safe-audio-manager.sh` and its CI workflow were removed before this checkpoint because Radio Book is no longer part of the production design.
 
 ## Desired final output
 
