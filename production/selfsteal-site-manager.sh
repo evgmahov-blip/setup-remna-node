@@ -31,7 +31,8 @@ fail(){ printf '[ERROR] %s\n' "$*" >&2; return 1; }
 require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || { fail 'Запусти от root'; return 1; }; }
 
 fetch_static(){
-  local url="$1" dst="$2" tmp="${dst}.part"
+  local url="$1" dst="$2" tmp
+  tmp="${dst}.part"
   rm -f "$tmp"
   if ! curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 "$url" -o "$tmp"; then
     rm -f "$tmp"; fail "Не удалось скачать $url"; return 1
