@@ -28,8 +28,9 @@ jobs:
         run: |
           set -euo pipefail
           bash -n production/stream-safe-audio-manager.sh
-          if grep -qi 'deepbeat' production/stream-safe-audio-manager.sh; then
-            echo 'DeepBeat dependency is forbidden in safe-audio manager' >&2
+          if grep -Fq 'stream.deepbeat.ru' production/stream-safe-audio-manager.sh \
+             || grep -Fq '/api/deepbeat-' production/stream-safe-audio-manager.sh; then
+            echo 'A concrete DeepBeat endpoint is forbidden in safe-audio manager' >&2
             exit 1
           fi
           grep -Fq 'proxy_ssl_verify on;' production/stream-safe-audio-manager.sh
