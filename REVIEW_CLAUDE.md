@@ -2,11 +2,7 @@
 
 ## Review target
 
-Review exact commit:
-
-`d54dfbbffda30b15711529e3192410bf4a9cc6fd`
-
-Branch:
+Review the current HEAD of branch:
 
 `fix/xhttp-raw-hysteria-from-july7`
 
@@ -172,7 +168,7 @@ Please explicitly state whether these remain acceptable or should block merge:
 
 ## CI and live evidence
 
-Exact review commit `d54dfbbffda30b15711529e3192410bf4a9cc6fd` passed all six current workflows:
+Production checkpoint `d54dfbbffda30b15711529e3192410bf4a9cc6fd` passed all six current workflows:
 
 - `inbound-name-ci`: SUCCESS
 - `selfsteal-site-ci`: SUCCESS
@@ -181,7 +177,9 @@ Exact review commit `d54dfbbffda30b15711529e3192410bf4a9cc6fd` passed all six cu
 - `runtime-guards-ci`: SUCCESS
 - `round4-regressions-ci`: SUCCESS
 
-The former experimental `stream-safe-audio-manager.sh` and its CI workflow were removed before this checkpoint because Radio Book is no longer part of the production design.
+Commits after that checkpoint only adjust this final-review brief; reviewers should still inspect CI status on the current branch HEAD.
+
+The former experimental `stream-safe-audio-manager.sh` and its CI workflow were removed before the green checkpoint because Radio Book is no longer part of the production design.
 
 ## Desired final output
 
