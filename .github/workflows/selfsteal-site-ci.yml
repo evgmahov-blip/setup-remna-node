@@ -20,6 +20,8 @@ jobs:
           set -euo pipefail
           bash -n setup_node_next.sh
           bash -n production/selfsteal-site-manager.sh
+          echo 'Current SelfSteal SHA256:'
+          sha256sum production/selfsteal-site-manager.sh
           sha256sum -c production/modules.sha256
           grep -Eq '^MODULE_REF="\$\{REMNANODE_REPO_REF:-[0-9a-f]{40}\}"$' setup_node_next.sh
           grep -q '\[production/selfsteal-site-manager.sh\]' setup_node_next.sh
