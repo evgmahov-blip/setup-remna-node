@@ -12,6 +12,8 @@ Base branch:
 
 Do not merge as part of this review. The goal is a final safety/architecture verdict before production merge.
 
+See also `REVIEW_CHECKLIST.md` for the final live-validation checklist.
+
 ## Non-negotiable dataplane invariant
 
 The known-working July 7 architecture must remain intact.
@@ -177,7 +179,7 @@ Production checkpoint `d54dfbbffda30b15711529e3192410bf4a9cc6fd` passed all six 
 - `runtime-guards-ci`: SUCCESS
 - `round4-regressions-ci`: SUCCESS
 
-Commits after that checkpoint only adjust this final-review brief; reviewers should still inspect CI status on the current branch HEAD.
+Commits after that checkpoint only adjust final-review documentation/checklists; reviewers should still inspect CI status on the current branch HEAD.
 
 The former experimental `stream-safe-audio-manager.sh` and its CI workflow were removed before the green checkpoint because Radio Book is no longer part of the production design.
 
