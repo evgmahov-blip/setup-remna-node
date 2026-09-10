@@ -20,9 +20,27 @@ fetch_checked(){
   chmod 0700 "$dst"
 }
 
+remove_legacy_tuning(){
+  local stamp backup
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  backup="/root/remna-node-clean-backups/legacy-tuning-$stamp"
+  mkdir -p "$backup"
+  if [[ -f /etc/sysctl.d/99-remnanode.conf ]]; then
+    cp -a /etc/sysctl.d/99-remnanode.conf "$backup/99-remnanode.conf"
+    rm -f /etc/sysctl.d/99-remnanode.conf
+  fi
+  if [[ -f /etc/security/limits.d/99-remnanode.conf ]]; then
+    cp -a /etc/security/limits.d/99-remnanode.conf "$backup/99-remnanode-limits.conf"
+    rm -f /etc/security/limits.d/99-remnanode.conf
+  fi
+  sysctl --system >/dev/null 2>&1 || true
+  echo "[OK] Legacy SAFE/HIGHLOAD tuning удалён; backup: $backup"
+}
+
 run_clean(){
   fetch_checked "$CLEAN_URL" "$TMP_CLEAN"
   bash "$TMP_CLEAN" clean
+  remove_legacy_tuning
 }
 
 run_next(){
@@ -39,6 +57,7 @@ case "$MODE" in
     run_next
     ;;
   install|install-next)
+    remove_legacy_tuning
     run_next
     ;;
   menu|'')
@@ -51,7 +70,7 @@ case "$MODE" in
     case "${choice:-0}" in
       1) run_clean ;;
       2) run_clean; run_next ;;
-      3) run_next ;;
+      3) remove_legacy_tuning; run_next ;;
       0) : ;;
       *) echo '[ERROR] Неверный пункт.' >&2; exit 2 ;;
     esac
