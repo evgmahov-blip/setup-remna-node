@@ -219,7 +219,7 @@ prepare_legacy_for_next(){
   tmp="${f}.next"
   rm -f "$tmp"
   if ! awk -v tref="$LEGACY_TEMPLATES_REF" -v lcommit="$LEGACY_COMMIT" '
-    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0; reg_done=0; pin_telemt=0; telemt_label=0; telemt_menu=0; uninstall_marker=0 }
+    BEGIN { skip_proto=0; proto_done=0; decoy_done=0; pin_url=0; pin_root=0; reg_done=0; pin_telemt=0; telemt_label=0; telemt_menu=0; uninstall_marker=0; ram_fix=0 }
     /# Выбор протокола шифрования/ {
       print "    # NEXT: July base always installs Reality/SelfSteal; modern transports are generated later."
       print "    log \"${INFO} NEXT: базовая схема Reality/SelfSteal; XHTTP/RAW/Hysteria2 настраиваются отдельно.\""
@@ -227,6 +227,10 @@ prepare_legacy_for_next(){
     }
     skip_proto && /# Скачивание и генерация маскировочного сайта SelfSteal/ { skip_proto=0; print; next }
     skip_proto { next }
+    index($0, "local ram_gb; ram_gb=$((ram_kb / 1024 / 1024))") {
+      print "    local ram_gb; ram_gb=$(( (ram_kb + 524288) / 1048576 ))"
+      ram_fix=1; next
+    }
     /read -p \"Домен маскировки \(decoy domain\) \[github\.com\]: \" decoy_domain/ {
       print "        decoy_domain=github.com"; decoy_done=1; next
     }
@@ -254,7 +258,7 @@ prepare_legacy_for_next(){
       reg_done=1; next
     }
     { print }
-    END { if (!proto_done || !decoy_done || !pin_url || !pin_root || !reg_done || !pin_telemt || !telemt_label || !telemt_menu || !uninstall_marker) exit 42 }
+    END { if (!proto_done || !decoy_done || !pin_url || !pin_root || !reg_done || !pin_telemt || !telemt_label || !telemt_menu || !uninstall_marker || !ram_fix) exit 42 }
   ' "$f" > "$tmp"; then
     rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Не удалось безопасно адаптировать July base"; return 1
   fi
@@ -267,10 +271,12 @@ prepare_legacy_for_next(){
      || grep -Fq 'read -p "Домен маскировки (decoy domain) [github.com]: " decoy_domain' "$tmp" \
      || grep -Fq 'node-templates/archive/refs/heads/main.zip' "$tmp" \
      || grep -Fq 'setup-remna-node/custom/vendor/telemt-install' "$tmp" \
+     || grep -Fq 'local ram_gb; ram_gb=$((ram_kb / 1024 / 1024))' "$tmp" \
      || grep -Eq '^[[:space:]]*11\) run_telemt_installer ;;' "$tmp" \
      || grep -q '^    register_globally$' "$tmp"; then
-    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/bypass/unsafe Telemt/prompt маркеры"; return 1
+    rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} В адаптированном legacy остались mutable/bypass/unsafe/old-RAM маркеры"; return 1
   fi
+  grep -Fq 'local ram_gb; ram_gb=$(( (ram_kb + 524288) / 1048576 ))' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Исправление определения 2 GB RAM не применено"; return 1; }
   grep -Fq "node-templates-${LEGACY_TEMPLATES_REF}" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Legacy template repo root не закреплён"; return 1; }
   grep -Fq "setup-remna-node/${LEGACY_COMMIT}/vendor/telemt-install" "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt legacy source не закреплён"; return 1; }
   grep -Fq 'Telemt отключён в NEXT' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Telemt safety gate не применён"; return 1; }
@@ -281,7 +287,7 @@ prepare_legacy_for_next(){
   grep -Fq 'командой: ${CYAN}remnanode-next${NC}' "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Подсказка remnanode-next не применена"; return 1; }
   bash -n "$tmp" || { rm -f "$tmp"; echo -e "${RED}[ОШИБКА]${NC} Адаптированный July base не прошёл bash -n"; return 1; }
   chmod 0755 "$tmp"; mv -f "$tmp" "$f"
-  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates; Telemt отключён из-за конфликта public 443; bypass remnanode отключён"
+  echo -e "${GREEN}[NEXT]${NC} July base: Reality/SelfSteal + pinned templates; RAM class fixed; Telemt отключён из-за конфликта public 443; bypass remnanode отключён"
 }
 
 compose_fingerprint(){
